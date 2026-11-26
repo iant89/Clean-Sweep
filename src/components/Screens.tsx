@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { GameOverInfo, HudState } from '../game/Game';
 import { UPGRADES, UpKey } from '../game/constants';
 import { ScoreEntry, addScore, lastName, loadScores, qualifies, saveName } from '../game/highscores';
+import type { SaveMeta } from '../game/saves';
 import { formatClock } from './HUD';
 
 function RoombaIcon({ size = 120 }: { size?: number }) {
@@ -38,15 +39,29 @@ export function ScoreTable({ scores, highlight }: { scores: ScoreEntry[]; highli
   );
 }
 
-export function StartScreen({ onPlay, isTouch, seenIntro }: { onPlay: (intro: boolean) => void; isTouch: boolean; seenIntro: boolean }) {
+export interface StartScreenProps {
+  onPlay: (intro: boolean) => void;
+  isTouch: boolean;
+  seenIntro: boolean;
+  autosave: SaveMeta | null;
+  saveCount: number;
+  onContinue: () => void;
+  onLoadMenu: () => void;
+}
+
+export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, onContinue, onLoadMenu }: StartScreenProps) {
   const scores = useMemo(() => loadScores(), []);
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
-      if (e.code === 'Enter' || e.code === 'Space') { e.preventDefault(); onPlay(!seenIntro); }
+      if (e.code === 'Enter' || e.code === 'Space') {
+        e.preventDefault();
+        if (autosave) onContinue();
+        else onPlay(!seenIntro);
+      }
     };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
-  }, [onPlay, seenIntro]);
+  }, [onPlay, seenIntro, autosave, onContinue]);
 
   return (
     <div className="absolute inset-0 overflow-y-auto scrollbar-thin fade-in" style={{ background: 'radial-gradient(ellipse at 50% 30%, rgba(20,10,30,0.35), rgba(5,3,8,0.88) 75%)' }}>
@@ -60,14 +75,28 @@ export function StartScreen({ onPlay, isTouch, seenIntro }: { onPlay: (intro: bo
           </p>
         </div>
 
+        {autosave && (
+          <button onClick={onContinue} className="btn-gold rounded-2xl px-10 py-3 font-black tracking-widest flex flex-col items-center">
+            <span className="text-xl">▶ CONTINUE SHIFT</span>
+            <span className="text-xs font-bold opacity-70 tracking-normal tabular-nums">
+              {formatClock(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.roomsCleared}/10 rooms
+            </span>
+          </button>
+        )}
         <div className="flex flex-col sm:flex-row gap-3 items-center">
-          <button onClick={() => onPlay(true)} className="btn-gold rounded-2xl px-10 py-4 font-black text-xl tracking-widest">
-            ▶ START SHIFT
+          <button onClick={() => onPlay(true)} className={`${autosave ? 'btn-ghost text-amber-100 px-6 py-3 text-base' : 'btn-gold px-10 py-4 text-xl'} rounded-2xl font-black tracking-widest`}>
+            {autosave ? '✦ NEW SHIFT' : '▶ START SHIFT'}
           </button>
           <button onClick={() => onPlay(false)} className="btn-ghost rounded-2xl px-6 py-3 font-bold tracking-wider text-amber-100">
-            ⏩ Skip intro
+            ⏩ {autosave ? 'New, skip intro' : 'Skip intro'}
           </button>
+          {saveCount > 0 && (
+            <button onClick={onLoadMenu} className="btn-ghost rounded-2xl px-6 py-3 font-bold tracking-wider text-amber-100">
+              📂 Load game
+            </button>
+          )}
         </div>
+        {autosave && <div className="-mt-3 text-xs text-amber-100/40">A new shift will replace the autosave — make a manual save from the pause menu to keep it.</div>}
 
         <div className="grid sm:grid-cols-2 gap-4 w-full max-w-3xl">
           <div className="panel rounded-2xl p-4">
@@ -94,7 +123,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro }: { onPlay: (intro: bo
   );
 }
 
-export function PauseMenu({ onResume, onRestart, onMenu, onMute, muted, hud }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; muted: boolean; hud: HudState | null }) {
+export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, muted, hud }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; muted: boolean; hud: HudState | null }) {
   return (
     <div className="absolute inset-0 bg-black/60 flex items-center justify-center p-4 fade-in" style={{ backdropFilter: 'blur(3px)' }}>
       <div className="panel rounded-2xl p-6 w-full max-w-sm flex flex-col gap-3 big-in">
@@ -107,9 +136,11 @@ export function PauseMenu({ onResume, onRestart, onMenu, onMute, muted, hud }: {
           </div>
         )}
         <button onClick={onResume} className="btn-gold rounded-xl py-3 font-black tracking-widest text-lg">▶ RESUME</button>
+        <button onClick={onSaveMenu} className="btn-ghost rounded-xl py-2.5 font-bold">💾 Save / Load</button>
         <button onClick={onRestart} className="btn-ghost rounded-xl py-2.5 font-bold">↻ Restart <span className="opacity-50 text-xs">(R)</span></button>
         <button onClick={onMute} className="btn-ghost rounded-xl py-2.5 font-bold">{muted ? '🔇 Sound off' : '🔊 Sound on'} <span className="opacity-50 text-xs">(M)</span></button>
         <button onClick={onMenu} className="btn-ghost rounded-xl py-2.5 font-bold">⌂ Main menu</button>
+        <div className="text-center text-[11px] text-amber-100/40">Progress autosaved — Continue from the main menu anytime.</div>
       </div>
     </div>
   );

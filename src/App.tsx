@@ -3,6 +3,8 @@ import { Game, GameOverInfo, HudState, Phase, ToastKind } from './game/Game';
 import HUD from './components/HUD';
 import TouchControls from './components/TouchControls';
 import { GameOver, PauseMenu, Shop, StartScreen } from './components/Screens';
+import { SaveMenu } from './components/SaveMenu';
+import { getAutosave, listSaves, loadSave } from './game/saves';
 
 interface Toast { id: number; text: string; kind: ToastKind }
 
@@ -29,6 +31,8 @@ export default function App() {
   const [seenIntro, setSeenIntro] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saveMenu, setSaveMenu] = useState<'save' | 'load' | null>(null);
+  const [savesVersion, setSavesVersion] = useState(0);
   const toastId = useRef(0);
   const isTouch = typeof window !== 'undefined' && (window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window);
 
@@ -52,6 +56,7 @@ export default function App() {
           onCaption: (text, big) => setCaption(text ? { text, big: !!big, id: Date.now() } : null),
           onGameOver: (info) => setOver(info),
           onMute: (m) => setMuted(m),
+          onSaves: () => setSavesVersion((v) => v + 1),
         });
         gameRef.current = g;
         setGame(g);
@@ -82,6 +87,31 @@ export default function App() {
     if (phase !== 'gameover') return;
     setToasts([]);
   }, [phase]);
+
+  // the save menu only lives on top of the title screen or the pause menu
+  useEffect(() => {
+    if (phase !== 'menu' && phase !== 'paused') setSaveMenu(null);
+  }, [phase]);
+
+  const loadById = useCallback((id: string) => {
+    const g = gameRef.current;
+    const f = loadSave(id);
+    if (!g || !f) { pushToast('That save could not be read.', 'bad'); setSavesVersion((v) => v + 1); return; }
+    setOver(null);
+    setToasts([]);
+    setSeenIntro(true);
+    setSaveMenu(null);
+    g.loadGame(f.run);
+  }, [pushToast]);
+
+  const continueRun = useCallback(() => {
+    const a = getAutosave();
+    if (a) loadById(a.id);
+  }, [loadById]);
+
+  // re-read storage for the title screen whenever saves change
+  const autosave = phase === 'menu' ? getAutosave() : null;
+  const saveCount = phase === 'menu' ? listSaves().length : 0;
 
   const minimapRef = useCallback((c: HTMLCanvasElement | null) => {
     gameRef.current?.setMinimap(c);
@@ -166,9 +196,19 @@ export default function App() {
         </>
       )}
 
-      {phase === 'menu' && !loading && !error && <StartScreen onPlay={play} isTouch={isTouch} seenIntro={seenIntro} />}
+      {phase === 'menu' && !loading && !error && !saveMenu && (
+        <StartScreen
+          onPlay={play}
+          isTouch={isTouch}
+          seenIntro={seenIntro}
+          autosave={autosave}
+          saveCount={saveCount}
+          onContinue={continueRun}
+          onLoadMenu={() => setSaveMenu('load')}
+        />
+      )}
 
-      {phase === 'paused' && (
+      {phase === 'paused' && !saveMenu && (
         <PauseMenu
           hud={hud}
           muted={muted}
@@ -176,6 +216,18 @@ export default function App() {
           onRestart={() => play(false)}
           onMenu={() => game?.toMenu()}
           onMute={() => game?.toggleMute()}
+          onSaveMenu={() => setSaveMenu('save')}
+        />
+      )}
+
+      {saveMenu && (phase === 'menu' || phase === 'paused') && (
+        <SaveMenu
+          mode={saveMenu}
+          inRun={phase === 'paused'}
+          version={savesVersion}
+          onSave={(id, name) => game?.saveGame(id, name) ?? null}
+          onLoad={loadById}
+          onClose={() => setSaveMenu(null)}
         />
       )}
 
