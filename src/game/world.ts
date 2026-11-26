@@ -105,7 +105,7 @@ export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
     ).replace(
       '#include <dithering_fragment>',
       `#include <dithering_fragment>
-      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(1.0, 0.94, 0.82), occRim * 0.85);`,
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.78), occRim * 0.4);`,
     );
   };
   mat.customProgramCacheKey = () => 'fade';
@@ -115,7 +115,7 @@ export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
 // see-through object keeps a crisp outline.
 function makeOutlineMaterial(cut: CutUniforms) {
   return new THREE.ShaderMaterial({
-    uniforms: { uRoomba: cut.uRoomba, uCut: cut.uCut, uColor: { value: new THREE.Color(0xfff0d0) } },
+    uniforms: { uRoomba: cut.uRoomba, uCut: cut.uCut, uColor: { value: new THREE.Color(0xc8c8c8) } },
     vertexShader: `
       varying vec3 vW;
       void main() {
@@ -131,7 +131,7 @@ function makeOutlineMaterial(cut: CutUniforms) {
       void main() {
         float fade = occFade(vW);
         if (fade < 0.02) discard;
-        gl_FragColor = vec4(uColor, 0.9 * fade);
+        gl_FragColor = vec4(uColor, 0.4 * fade);
       }`,
     transparent: true,
     depthWrite: false,
