@@ -59,7 +59,7 @@ export function patchCutaway(mat: THREE.Material, cut: CutUniforms, darkBack = f
   mat.customProgramCacheKey = () => (darkBack ? 'cutD' : 'cut');
 }
 
-// Furniture: fragments sitting between the camera and the roomba (i.e. tall pieces hiding it) are
+// Furniture: fragments that cover the roomba on screen and sit in front of it (i.e. pieces hiding it) are
 // faded to see-through with an ordered dither, which needs no sorting and works on merged meshes.
 // occFade() is shared with the outline material so edges show exactly where the furniture fades.
 const OCC_FADE_GLSL = `
@@ -72,8 +72,11 @@ float occFade(vec3 w) {
   vec3 dir = ray / len;
   vec3 rel = w - cameraPosition;
   float t = dot(rel, dir);
-  float perp = length(rel - dir * t);
-  return (1.0 - smoothstep(1.1, 2.3, perp)) * (1.0 - smoothstep(len - 1.4, len - 0.6, t));
+  if (t <= 0.0) return 0.0;
+  // Compare in screen space: scale the lateral offset to the roomba's depth, so only fragments
+  // whose projection actually lands on (or just around) the roomba fade - not things merely near it.
+  float perp = length(rel - dir * t) * len / t;
+  return (1.0 - smoothstep(0.8, 1.35, perp)) * (1.0 - smoothstep(len - 0.9, len - 0.45, t));
 }
 `;
 

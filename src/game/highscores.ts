@@ -1,3 +1,5 @@
+import { DEV_MODE } from './devmode';
+
 export interface ScoreEntry {
   name: string;
   score: number;
@@ -20,12 +22,13 @@ export function loadScores(): ScoreEntry[] {
 }
 
 export function qualifies(score: number) {
-  if (score <= 0) return false;
+  if (DEV_MODE || score <= 0) return false;
   const s = loadScores();
   return s.length < MAX || score > s[s.length - 1].score;
 }
 
 export function addScore(e: ScoreEntry): number {
+  if (DEV_MODE) return -1; // cheated runs never reach the table
   const s = loadScores();
   s.push(e);
   s.sort((a, b) => b.score - a.score);

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { GameOverInfo, HudState } from '../game/Game';
 import { UPGRADES, UpKey } from '../game/constants';
+import { DEV_MODE } from '../game/devmode';
 import { ScoreEntry, addScore, lastName, loadScores, qualifies, saveName } from '../game/highscores';
 import type { SaveMeta } from '../game/saves';
 import { formatClock } from './HUD';
@@ -277,6 +278,12 @@ export function GameOver({ info, onRestart, onMenu, isTouch }: { info: GameOverI
               />
               <button type="submit" className="btn-gold rounded-lg px-4 py-2 font-black">SAVE</button>
             </form>
+          )}
+
+          {DEV_MODE && (
+            <div className="text-center text-xs font-semibold text-fuchsia-200/80 bg-fuchsia-400/10 border border-fuchsia-300/30 rounded-xl px-3 py-2">
+              🛠 Dev mode — high scores are disabled
+            </div>
           )}
 
           <div className="bg-black/30 rounded-xl p-2 max-h-56 overflow-y-auto scrollbar-thin">
