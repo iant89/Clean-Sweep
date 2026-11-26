@@ -1036,8 +1036,10 @@ export class Game {
       // dock check
       const dd = Math.hypot(this.px - DOCK.x, this.pz - DOCK.z);
       if (this.dockLock && dd > 2.0) this.dockLock = false;
-      // touching the dock's ring captures the roomba (only when it needs charging or emptying)
-      if (!this.dockLock && dd < DOCK_CAPTURE_R && (this.battery < this.batteryMax - 1 || this.bin > 0.5)) {
+      // touching the dock's ring captures the roomba whenever it is heading towards the dock
+      // (within 90 degrees); facing halfway away or more, it can pass by
+      const facingDock = dd < 0.05 || (Math.sin(this.yaw) * (DOCK.x - this.px) + Math.cos(this.yaw) * (DOCK.z - this.pz)) / dd > 0;
+      if (!this.dockLock && dd < DOCK_CAPTURE_R && facingDock) {
         this.docked = true;
         this.undockArmed = false;
         this.sfx.magnet();
