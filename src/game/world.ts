@@ -428,7 +428,7 @@ export interface RoombaModel {
   eyes: THREE.Mesh[];
   brushes: THREE.Group[];
   light: THREE.PointLight;
-  glow: THREE.Sprite;
+  glow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
 }
 
 function makeRoomba(): RoombaModel {
@@ -486,11 +486,14 @@ function makeRoomba(): RoombaModel {
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.012;
   group.add(shadow);
-  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+  // Glow lies flat on the floor as a halo: a camera-facing sprite sank half into the floor and got clipped.
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
     map: blobTexture('rgba(120,240,255,0.55)', 'rgba(0,200,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
+  glow.rotation.x = -Math.PI / 2;
   glow.scale.set(2.4, 2.4, 1);
-  glow.position.y = 0.3;
+  glow.position.y = 0.02;
+  glow.renderOrder = 2;
   group.add(glow);
   const light = new THREE.PointLight(0x9feaff, 0, 15, 2);
   light.position.set(0, 2.6, 0.4);
