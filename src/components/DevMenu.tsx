@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { DevCheat, Game } from '../game/Game';
 
-/** True when the page was opened with ?devmode=true. */
-export const DEV_MODE = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('devmode') === 'true';
+export { DEV_MODE } from '../game/devmode';
 
 const ACTIONS: { cmd: DevCheat; label: string; toggle?: 'infBattery' | 'freezeTime' }[] = [
   { cmd: 'coins100', label: '+100 🪙' },
