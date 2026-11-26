@@ -6,6 +6,7 @@ import { DirtMap, UNIT, makeRng } from './dirt';
 import { buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Particles } from './particles';
 import { Sfx } from './audio';
+import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
 
 export type Phase = 'menu' | 'intro' | 'playing' | 'paused' | 'shop' | 'gameover' | 'tidy';
 
@@ -62,6 +63,8 @@ export interface GameCallbacks {
   onCaption: (text: string | null, big?: boolean) => void;
   onGameOver: (info: GameOverInfo) => void;
   onMute: (m: boolean) => void;
+  /** Fired whenever a save is written or the autosave is cleared, so menus can refresh. */
+  onSaves?: () => void;
 }
 
 interface Coin { x: number; z: number; active: boolean; phase: number }
@@ -72,6 +75,8 @@ const KEYMAP: Record<string, 'u' | 'd' | 'l' | 'r' | 't'> = {
   KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r',
   ShiftLeft: 't', ShiftRight: 't', Space: 't',
 };
+
+const AUTOSAVE_EVERY = 15;
 
 const emptyUpgrades = (): Record<UpKey, number> => ({ battery: 0, bin: 0, speed: 0, brush: 0, suction: 0, charger: 0 });
 
@@ -170,6 +175,8 @@ export class Game {
   hudT = 0;
   mapT = 0;
   slowFrames = 0;
+  /** Seconds since the last autosave while playing. */
+  autosaveT = 0;
   pixelRatio: number;
   disposed = false;
   private tmpV = new THREE.Vector3();
@@ -255,6 +262,7 @@ export class Game {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
     document.addEventListener('visibilitychange', this.onVis);
+    window.addEventListener('pagehide', this.onPageHide);
     // warm up shaders
     this.renderer.compile(this.world.scene, this.camera);
     this.last = performance.now();
@@ -272,6 +280,7 @@ export class Game {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     document.removeEventListener('visibilitychange', this.onVis);
+    window.removeEventListener('pagehide', this.onPageHide);
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -312,11 +321,11 @@ export class Game {
     this.beginPlay(true);
   }
 
-  pause() { if (this.phase === 'playing' && !this.ending) { this.setPhase('paused'); this.sfx.hum(0, 0); } }
+  pause() { if (this.phase === 'playing' && !this.ending) { this.setPhase('paused'); this.sfx.hum(0, 0); this.autosave(); } }
   resume() { if (this.phase === 'paused') { this.setPhase('playing'); this.last = performance.now(); } }
   openShop() { if (this.phase === 'playing' && this.docked && !this.ending) { this.setPhase('shop'); this.sfx.click(); this.sfx.hum(0, 0); this.pushHud(); } }
-  closeShop() { if (this.phase === 'shop') { this.setPhase('playing'); this.sfx.click(); } }
-  toMenu() { this.cb.onCaption(null); this.resetRun(); this.setRoombaPower(0); this.setPhase('menu'); this.sfx.hum(0, 0); }
+  closeShop() { if (this.phase === 'shop') { this.setPhase('playing'); this.sfx.click(); this.autosave(); } }
+  toMenu() { this.autosave(); this.cb.onCaption(null); this.resetRun(); this.setRoombaPower(0); this.setPhase('menu'); this.sfx.hum(0, 0); }
   toggleMute() { this.sfx.setMuted(!this.sfx.muted); this.cb.onMute(this.sfx.muted); }
   setJoystick(x: number, y: number, active: boolean) { this.joy.x = x; this.joy.y = y; this.joy.active = active; }
   setTurbo(b: boolean) { this.turboTouch = b; }
@@ -338,6 +347,149 @@ export class Game {
     }
     this.pushHud();
     return true;
+  }
+
+  // ------------------------------------------------------------ save / load
+  /** True while there's a live run that can be saved. */
+  get canSave() {
+    return (this.phase === 'playing' || this.phase === 'paused' || this.phase === 'shop' || this.phase === 'tidy') && !this.ending;
+  }
+
+  serialize(): RunSnapshot {
+    const tidyQueue = [...this.tidyQueue];
+    // a cutscene in progress is replayed from the start of that room on load
+    if (this.tidy && !tidyQueue.includes(this.tidy.room)) tidyQueue.unshift(this.tidy.room);
+    const g = this.ghost;
+    return {
+      v: SAVE_VERSION,
+      time: this.time,
+      score: this.score,
+      coins: this.coins,
+      coinsEarned: this.coinsEarned,
+      coinFrac: this.coinFrac,
+      battery: this.battery,
+      bin: this.bin,
+      binBase: this.binBase,
+      up: { ...this.up },
+      mult: this.mult,
+      comboTime: this.comboTime,
+      comboTimer: this.comboTimer,
+      cleared: [...this.cleared],
+      clearedOnce: [...this.clearedOnce],
+      clears: this.clears,
+      docked: this.docked,
+      warned30: this.warned30,
+      warned12: this.warned12,
+      binWarned: this.binWarned,
+      ghost: g ? { room: g.room, steps: g.steps.map((s) => ({ ...s })), idx: g.idx, timer: g.timer, x: g.x, z: g.z, fade: g.fade } : null,
+      nextGhost: this.nextGhost,
+      hourAnnounced: this.hourAnnounced,
+      px: this.px,
+      pz: this.pz,
+      yaw: this.yaw,
+      coinSpots: this.coinsList.filter((c) => c.active).map((c) => [c.x, c.z] as [number, number]),
+      messTidy: this.world.mess.map((m) => m.tidy),
+      tidyQueue,
+      dirtTotal: Array.from(this.dirt.total),
+      dirt: encodeBytes(this.dirt.data),
+      dirtLen: this.dirt.data.length,
+    };
+  }
+
+  private saveMeta() {
+    return {
+      time: this.time,
+      score: Math.round(this.score),
+      coins: this.coins,
+      roomsCleared: this.cleared.filter(Boolean).length,
+      overall: this.dirt.overall(),
+    };
+  }
+
+  /** Write the current run to a save slot (new manual slot when id is omitted). */
+  saveGame(id?: string, name?: string): SaveMeta | null {
+    if (!this.canSave) return null;
+    const meta = writeSave(this.serialize(), this.saveMeta(), id, name);
+    if (meta) this.cb.onSaves?.();
+    return meta;
+  }
+
+  autosave() {
+    if (!this.canSave || this.time <= 0) return;
+    this.autosaveT = 0;
+    writeSave(this.serialize(), this.saveMeta(), AUTO_ID);
+    this.cb.onSaves?.();
+  }
+
+  /** Resume a saved run. */
+  loadGame(run: RunSnapshot) {
+    this.sfx.unlock();
+    this.cb.onCaption(null);
+    this.resetRun();
+    this.time = run.time;
+    this.score = run.score;
+    this.coins = run.coins;
+    this.coinsEarned = run.coinsEarned;
+    this.coinFrac = run.coinFrac;
+    this.binBase = run.binBase;
+    this.up = { ...emptyUpgrades(), ...run.up };
+    this.battery = Math.min(this.batteryMax, run.battery);
+    this.bin = run.bin;
+    this.mult = run.mult;
+    this.comboTime = run.comboTime;
+    this.comboTimer = run.comboTimer;
+    this.cleared = ROOMS.map((_, i) => !!run.cleared[i]);
+    this.clearedOnce = ROOMS.map((_, i) => !!run.clearedOnce[i]);
+    this.clears = run.clears;
+    this.warned30 = run.warned30;
+    this.warned12 = run.warned12;
+    this.binWarned = run.binWarned;
+    this.nextGhost = run.nextGhost;
+    this.hourAnnounced = run.hourAnnounced;
+    this.fullHinted = true;
+    this.dockHinted = true;
+
+    // dirt: restore the texture and recompute each room's running sum from it
+    const d = this.dirt;
+    d.data.set(decodeBytes(run.dirt, d.data.length));
+    d.sum.fill(0);
+    for (let k = 0; k < d.data.length; k++) {
+      const rid = d.room[k];
+      if (rid >= 0 && d.data[k]) d.sum[rid] += d.data[k];
+    }
+    for (let i = 0; i < ROOMS.length; i++) d.total[i] = run.dirtTotal[i] ?? Math.max(1, d.sum[i]);
+    d.dirty = true;
+
+    this.world.mess.forEach((m, i) => this.world.setMessState(m, !!run.messTidy[i]));
+    this.tidyQueue = run.tidyQueue.filter((r) => this.world.mess.some((m) => m.room === r && !m.tidy));
+    this.tidyDelay = this.tidyQueue.length ? 1.2 : 0;
+
+    for (const c of this.coinsList) c.active = false;
+    for (const [x, z] of run.coinSpots) this.placeCoin(x, z);
+
+    if (run.ghost && run.ghost.steps.length) {
+      this.ghost = { ...run.ghost, steps: run.ghost.steps.map((s) => ({ ...s })) };
+      this.ghostSprite.visible = true;
+    }
+
+    this.docked = run.docked;
+    this.dockLock = true;
+    this.undockArmed = false;
+    if (run.docked) { this.px = DOCK.x; this.pz = DOCK.z; this.yaw = Math.PI; }
+    else { this.px = run.px; this.pz = run.pz; this.yaw = run.yaw; }
+    this.camT.set(this.px, 0, this.pz);
+    this.world.roomba.group.position.set(this.px, 0, this.pz);
+    this.world.roomba.group.rotation.y = this.yaw;
+
+    this.setRoombaPower(1);
+    this.world.ambient.intensity = 0.75;
+    this.world.hemi.intensity = 0.8;
+    this.snapCamera();
+    this.setPhase('playing');
+    this.last = performance.now();
+    this.pushHud();
+    this.drawMinimap();
+    this.cb.onToast('💾 Shift resumed — welcome back!', 'good');
   }
 
   // ------------------------------------------------------------ internals
@@ -378,6 +530,7 @@ export class Game {
     this.dirt.generate(Math.floor(Math.random() * 1e6));
     this.binBase = Math.max(70, Math.min(220, this.dirt.totalUnits() * 0.12));
     this.time = 0;
+    this.autosaveT = 0;
     this.score = 0;
     this.coins = 0;
     this.coinsEarned = 0;
@@ -533,7 +686,8 @@ export class Game {
     }
   };
   private onKeyUp = (e: KeyboardEvent) => { if (KEYMAP[e.code]) this.keys.delete(KEYMAP[e.code]); };
-  private onBlur = () => { this.keys.clear(); this.joy.active = false; this.turboTouch = false; this.pause(); };
+  private onBlur = () => { this.keys.clear(); this.joy.active = false; this.turboTouch = false; this.pause(); if (this.phase === 'shop') this.autosave(); };
+  private onPageHide = () => { this.autosave(); };
   private onVis = () => { if (document.hidden) this.onBlur(); };
 
   // ------------------------------------------------------------ loop
@@ -926,6 +1080,8 @@ export class Game {
 
     this.time += dt;
     if (this.time >= NIGHT_LENGTH) { this.startEnding('dawn'); return; }
+    this.autosaveT += dt;
+    if (this.autosaveT >= AUTOSAVE_EVERY) this.autosave();
     const hour = Math.floor(this.time / (NIGHT_LENGTH / 5));
     if (hour > this.hourAnnounced) {
       this.hourAnnounced = hour;
@@ -1207,6 +1363,7 @@ export class Game {
       this.tidyQueue.push(i);
       this.tidyDelay = Math.max(this.tidyDelay, 1.4);
     }
+    this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1.5);
     if (this.cleared.every(Boolean)) {
       this.score += 5000;
       this.coins += 100;
@@ -1217,6 +1374,8 @@ export class Game {
 
   private startEnding(reason: 'battery' | 'dawn') {
     this.ending = reason;
+    deleteSave(AUTO_ID);
+    this.cb.onSaves?.();
     this.endTimer = reason === 'battery' ? 1.8 : 2.2;
     this.arrow.visible = false;
     this.turbo = false;
