@@ -471,9 +471,12 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
   const boxes: Box[] = [];
   const addBox = (cx: number, cz: number, w: number, d: number) => boxes.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 
+  // Walls (and things hung on them) get the cutaway so they never hide the roomba; furniture uses
+  // an otherwise identical material set without it, so it stays visible when the roomba drives up to it.
+  const makeMats = (cutaway: boolean) => {
   const L = (color: number, opts: THREE.MeshLambertMaterialParameters = {}, dark = false) => {
     const m = new THREE.MeshLambertMaterial({ color, ...opts });
-    patchCutaway(m, cut, dark);
+    if (cutaway) patchCutaway(m, cut, dark);
     return m;
   };
   const M = {
@@ -506,6 +509,9 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
     globe: L(0x2a6a8a),
   };
   const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1) }));
+  return { M, portraits };
+  };
+  let { M, portraits } = makeMats(true);
 
   // ---- floor
   const floorTex = floorTexture(grid);
@@ -612,7 +618,8 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   windowAt(2, 47, Math.PI / 2);
   windowAt(2, 37, Math.PI / 2);
 
-  // ---- furniture
+  // ---- furniture (no cutaway)
+  ({ M, portraits } = makeMats(false));
   const rng = makeRng(42);
   const legsCollide = (x: number, z: number, a: number, pts: [number, number][], s = 0.3) => {
     for (const [lx, lz] of pts) { const [wx, wz] = rotXZ(lx, lz, a); addBox(x + wx, z + wz, s, s); }
