@@ -564,6 +564,8 @@ export interface World {
   lights: { light: THREE.PointLight; base: number }[];
   ambient: THREE.AmbientLight;
   hemi: THREE.HemisphereLight;
+  /** Grandfather clocks: position and pendulum phase (pendulum angle ~ sin(t*PI + phase)). */
+  clocks: { x: number; z: number; phase: number }[];
   /** Drive animated furniture. t: seconds; hours: in-game clock time in hours (12 = midnight). */
   animate(t: number, hours: number): void;
 }
@@ -728,6 +730,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   // ---- furniture (fades when blocking the roomba, never cut away)
   // Moving parts are real meshes (not merged into the statics) and are driven by animate().
   const animators: ((t: number, hours: number) => void)[] = [];
+  const clocks: World['clocks'] = [];
   const animRoot = new THREE.Group();
   scene.add(animRoot);
   const anchor = (x: number, z: number, ry: number) => {
@@ -968,6 +971,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
           pend.add(bob);
           g.add(hub, pend);
           const phase = (f.x * 7.3 + f.z * 3.1) % 6;
+          clocks.push({ x: f.x, z: f.z, phase });
           animators.push((t, hours) => {
             const h = hours % 12;
             hourHand.rotation.z = -(h / 12) * Math.PI * 2;
@@ -1173,5 +1177,5 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
 
   const animate = (t: number, hours: number) => { for (const fn of animators) fn(t, hours); };
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, animate };
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, animate };
 }

@@ -63,7 +63,7 @@ export class Sfx {
     this.humOsc.frequency.setTargetAtTime(90 + pitch * 60, t, 0.1);
   }
 
-  tone(freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.3, slide = 0, delay = 0) {
+  tone(freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.3, slide = 0, delay = 0, dest?: AudioNode) {
     if (!this.ctx || !this.master) return;
     const t = this.ctx.currentTime + delay;
     const o = this.ctx.createOscillator();
@@ -74,12 +74,12 @@ export class Sfx {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(this.master);
+    o.connect(g).connect(dest ?? this.master);
     o.start(t);
     o.stop(t + dur + 0.05);
   }
 
-  noise(dur: number, freq: number, vol = 0.3, delay = 0, type: BiquadFilterType = 'lowpass') {
+  noise(dur: number, freq: number, vol = 0.3, delay = 0, type: BiquadFilterType = 'lowpass', dest?: AudioNode) {
     if (!this.ctx || !this.master || !this.noiseBuf) return;
     const t = this.ctx.currentTime + delay;
     const s = this.ctx.createBufferSource();
@@ -90,7 +90,7 @@ export class Sfx {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f).connect(g).connect(this.master);
+    s.connect(f).connect(g).connect(dest ?? this.master);
     s.start(t, Math.random());
     s.stop(t + dur + 0.05);
   }
@@ -122,4 +122,56 @@ export class Sfx {
   over() { [523, 440, 349, 262].forEach((f, i) => this.tone(f, 0.4, 'triangle', 0.22, -20, i * 0.18)); }
   dawn() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.3, 'triangle', 0.2, 0, i * 0.12)); }
   click() { this.tone(700, 0.05, 'square', 0.08); }
+
+  // ---- positional sounds: vol already includes distance falloff, pan is -1 (left) .. 1 (right)
+  private bus(vol: number, pan: number): AudioNode | null {
+    if (!this.ctx || !this.master) return null;
+    const g = this.ctx.createGain();
+    g.gain.value = vol;
+    if (this.ctx.createStereoPanner) {
+      const p = this.ctx.createStereoPanner();
+      p.pan.value = Math.max(-1, Math.min(1, pan));
+      g.connect(p).connect(this.master);
+    } else {
+      g.connect(this.master);
+    }
+    return g;
+  }
+
+  /** Grandfather-clock tick (tock = the lower, alternate beat). */
+  tick(vol: number, pan: number, tock: boolean) {
+    const d = this.bus(vol, pan);
+    if (!d) return;
+    this.noise(0.035, tock ? 1900 : 2600, 0.9, 0, 'bandpass', d);
+    this.tone(tock ? 900 : 1250, 0.045, 'triangle', 0.35, 0, 0, d);
+  }
+
+  /** One struck bell: a few inharmonic partials with long, staggered decays. */
+  private bell(freq: number, delay: number, vol: number, dest: AudioNode) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime + delay;
+    const partials: [number, number, number][] = [[0.5, 0.35, 4.5], [1, 1, 3.6], [2.0, 0.45, 2.4], [2.76, 0.3, 1.6], [5.4, 0.12, 0.8]];
+    for (const [ratio, amp, dur] of partials) {
+      const o = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = freq * ratio;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol * amp, t + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g).connect(dest);
+      o.start(t);
+      o.stop(t + dur + 0.05);
+    }
+  }
+
+  /** Hourly chime: a short bell phrase, then one low strike per hour. */
+  chime(hour: number, vol: number, pan: number, delay = 0) {
+    const d = this.bus(vol, pan);
+    if (!d) return;
+    const phrase = [659, 784, 587, 392];
+    phrase.forEach((f, i) => this.bell(f, delay + i * 0.6, 0.5, d));
+    const start = delay + phrase.length * 0.6 + 0.8;
+    for (let k = 0; k < hour; k++) this.bell(196, start + k * 1.6, 0.75, d);
+  }
 }

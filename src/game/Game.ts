@@ -533,6 +533,7 @@ export class Game {
     if (this.phase !== 'paused' && this.phase !== 'shop') {
       this.world.animate(now / 1000, 12 + (Math.min(this.time, NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
     }
+    if (this.phase === 'playing') this.tickClocks(now / 1000);
     if (this.phase !== 'paused' && this.phase !== 'shop') {
       const target = this.docked ? this.tmpV.set(DOCK.x, 0.4, DOCK.z + 1.0) : this.tmpV.set(this.px, 0.25, this.pz);
       this.dust.update(dt, target.x, target.y, target.z);
@@ -570,6 +571,38 @@ export class Game {
     this.world.cut.uRoomba.value.set(this.px, 0, this.pz);
     // flicker lights
     this.flicker();
+  }
+
+  // ---- grandfather clock sounds, positioned relative to the roomba
+  private tickSigns: boolean[] = [];
+
+  /** Left/right placement from the direction to the clock, never hard-panned. */
+  private clockPan(c: { x: number; z: number }) {
+    const d = Math.max(1, Math.hypot(c.x - this.px, c.z - this.pz));
+    return ((c.x - this.px) / d) * 0.6;
+  }
+
+  /** A tick each time a pendulum passes the centre of its swing, audible only nearby. */
+  private tickClocks(t: number) {
+    this.world.clocks.forEach((c, i) => {
+      const sign = Math.sin(t * Math.PI + c.phase) >= 0;
+      const prev = this.tickSigns[i];
+      this.tickSigns[i] = sign;
+      if (prev === undefined || prev === sign) return;
+      const d = Math.hypot(c.x - this.px, c.z - this.pz);
+      const near = Math.max(0, 1 - d / 13);
+      if (near <= 0) return;
+      this.sfx.tick(0.32 * near * near, this.clockPan(c), !sign);
+    });
+  }
+
+  /** Hourly chime from every clock: heard anywhere in the manor, louder the closer you are. */
+  private chimeClocks(hour: number) {
+    this.world.clocks.forEach((c, i) => {
+      const d = Math.hypot(c.x - this.px, c.z - this.pz);
+      const vol = 0.32 * (0.18 + 0.82 / (1 + (d / 7) ** 2));
+      this.sfx.chime(hour, vol, this.clockPan(c), i * 0.12);
+    });
   }
 
   private flicker() {
@@ -706,6 +739,7 @@ export class Game {
       this.hourAnnounced = hour;
       const left = 5 - hour;
       this.cb.onToast(`🕐 ${hour}:00 AM — ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
+      this.chimeClocks(hour);
     }
 
     const inp = this.input();
