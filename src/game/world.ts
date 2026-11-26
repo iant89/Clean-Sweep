@@ -61,6 +61,22 @@ export function patchCutaway(mat: THREE.Material, cut: CutUniforms, darkBack = f
 
 // Furniture: fragments sitting between the camera and the roomba (i.e. tall pieces hiding it) are
 // faded to see-through with an ordered dither, which needs no sorting and works on merged meshes.
+// occFade() is shared with the outline material so edges show exactly where the furniture fades.
+const OCC_FADE_GLSL = `
+uniform vec3 uRoomba;
+uniform float uCut;
+float occFade(vec3 w) {
+  if (uCut < 0.5 || w.y <= 0.35) return 0.0;
+  vec3 ray = vec3(uRoomba.x, 0.25, uRoomba.z) - cameraPosition;
+  float len = length(ray);
+  vec3 dir = ray / len;
+  vec3 rel = w - cameraPosition;
+  float t = dot(rel, dir);
+  float perp = length(rel - dir * t);
+  return (1.0 - smoothstep(1.1, 2.3, perp)) * (1.0 - smoothstep(len - 1.4, len - 0.6, t));
+}
+`;
+
 export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uRoomba = cut.uRoomba;
@@ -70,27 +86,56 @@ export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
       `#include <project_vertex>
       vCutW = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
     );
-    shader.fragmentShader = 'uniform vec3 uRoomba;\nuniform float uCut;\nvarying vec3 vCutW;\n' + shader.fragmentShader.replace(
+    shader.fragmentShader = 'varying vec3 vCutW;\n' + OCC_FADE_GLSL + shader.fragmentShader.replace(
       '#include <clipping_planes_fragment>',
       `#include <clipping_planes_fragment>
-      if (uCut > 0.5 && vCutW.y > 0.35) {
-        vec3 ray = vec3(uRoomba.x, 0.25, uRoomba.z) - cameraPosition;
-        float len = length(ray);
-        vec3 dir = ray / len;
-        vec3 rel = vCutW - cameraPosition;
-        float t = dot(rel, dir);
-        float perp = length(rel - dir * t);
-        float fade = (1.0 - smoothstep(1.1, 2.3, perp)) * (1.0 - smoothstep(len - 1.4, len - 0.6, t));
-        if (fade > 0.0) {
-          const float bayer[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
-          ivec2 bp = ivec2(mod(gl_FragCoord.xy, 4.0));
-          float thr = (bayer[bp.x + bp.y * 4] + 0.5) / 16.0;
-          if (1.0 - 0.6 * fade < thr) discard;
-        }
+      float fade = occFade(vCutW);`,
+    ).replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+      // silhouette rim: where the surface turns away from the camera (sides of curved shapes) stays solid
+      float occRim = 0.0;
+      if (fade > 0.0) {
+        occRim = smoothstep(0.72, 0.9, 1.0 - abs(dot(normal, normalize(vViewPosition)))) * fade;
+        const float bayer[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+        ivec2 bp = ivec2(mod(gl_FragCoord.xy, 4.0));
+        float thr = (bayer[bp.x + bp.y * 4] + 0.5) / 16.0;
+        if (occRim < 0.5 && 1.0 - 0.6 * fade < thr) discard;
       }`,
+    ).replace(
+      '#include <dithering_fragment>',
+      `#include <dithering_fragment>
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(1.0, 0.94, 0.82), occRim * 0.85);`,
     );
   };
   mat.customProgramCacheKey = () => 'fade';
+}
+
+// Edge lines for faded furniture: invisible normally, drawn only where occFade() is active, so a
+// see-through object keeps a crisp outline.
+function makeOutlineMaterial(cut: CutUniforms) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uRoomba: cut.uRoomba, uCut: cut.uCut, uColor: { value: new THREE.Color(0xfff0d0) } },
+    vertexShader: `
+      varying vec3 vW;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vW = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+        gl_Position.z -= 0.002 * gl_Position.w; // pull lines just in front of their own faces
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      varying vec3 vW;
+      ${OCC_FADE_GLSL}
+      void main() {
+        float fade = occFade(vW);
+        if (fade < 0.02) discard;
+        gl_FragColor = vec4(uColor, 0.9 * fade);
+      }`,
+    transparent: true,
+    depthWrite: false,
+  });
 }
 
 // ---------------------------------------------------------------- static builder
@@ -507,11 +552,12 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
 
   // Walls (and things hung on them) get the cutaway so they never hide the roomba; furniture uses
   // an otherwise identical material set that instead fades see-through only where it blocks the roomba.
+  const fadeMats = new Set<THREE.Material>();
   const makeMats = (cutaway: boolean) => {
   const L = (color: number, opts: THREE.MeshLambertMaterialParameters = {}, dark = false) => {
     const m = new THREE.MeshLambertMaterial({ color, ...opts });
     if (cutaway) patchCutaway(m, cut, dark);
-    else patchOccluderFade(m, cut);
+    else { patchOccluderFade(m, cut); fadeMats.add(m); }
     return m;
   };
   const M = {
@@ -937,6 +983,15 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   }
   const statics = new THREE.Group();
   sb.build(statics);
+  // outline edges for every furniture mesh (only drawn while that furniture is faded)
+  const outlineMat = makeOutlineMaterial(cut);
+  for (const child of [...statics.children]) {
+    if (!(child instanceof THREE.Mesh) || !fadeMats.has(child.material)) continue;
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry, 35), outlineMat);
+    edges.matrixAutoUpdate = false;
+    edges.renderOrder = 5;
+    statics.add(edges);
+  }
   scene.add(statics);
 
   // ---- intro-only decor: ceiling & chandeliers
