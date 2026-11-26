@@ -123,6 +123,19 @@ export class Sfx {
   dawn() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.3, 'triangle', 0.2, 0, i * 0.12)); }
   click() { this.tone(700, 0.05, 'square', 0.08); }
 
+  // ---- tidy-up cutscene
+  tidyStart() { [784, 988, 1175, 1568].forEach((f, i) => this.tone(f, 0.5, 'sine', 0.1, 0, i * 0.07)); }
+  tidyLift(vol = 1) {
+    this.tone(520, 0.4, 'sine', 0.1 * vol, 380);
+    this.tone(1040, 0.3, 'triangle', 0.04 * vol, 600, 0.05);
+  }
+  tidyLand(vol = 1) {
+    this.tone(170, 0.14, 'sine', 0.3 * vol, -70);
+    this.noise(0.07, 800, 0.18 * vol);
+    this.tone(1760, 0.25, 'triangle', 0.05 * vol, 0, 0.04);
+  }
+  tidyDone() { [659, 880, 1319].forEach((f, i) => this.tone(f, 0.35, 'triangle', 0.15, 0, i * 0.09)); }
+
   // ---- positional sounds: vol already includes distance falloff, pan is -1 (left) .. 1 (right)
   private bus(vol: number, pan: number): AudioNode | null {
     if (!this.ctx || !this.master) return null;

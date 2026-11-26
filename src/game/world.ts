@@ -552,6 +552,35 @@ function makeDock(): DockModel {
 }
 
 // ---------------------------------------------------------------- world
+// ---------------------------------------------------------------- mess (out-of-place objects)
+export interface Pose { p: THREE.Vector3; q: THREE.Quaternion; s: THREE.Vector3 }
+export interface MessPart { obj: THREE.Object3D; from: Pose; to: Pose; delay: number }
+export interface MessItem {
+  kind: 'tipchair' | 'books' | 'vase' | 'pots' | 'frame';
+  room: number;
+  parts: MessPart[];
+  messyBoxes: Box[];
+  tidyBoxes: Box[];
+  tidy: boolean;
+  /** Where the cutscene camera should look, and how far apart the messy/tidy spots are. */
+  focus: THREE.Vector3;
+  spread: number;
+  /** Seconds this item's tidy animation takes (part animation + the last part's delay). */
+  duration: number;
+}
+/** Seconds one part takes to lift, travel and settle. */
+export const PART_ANIM = 1.5;
+
+const poseOf = (m: THREE.Matrix4): Pose => {
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  m.decompose(p, q, s);
+  return { p, q, s };
+};
+const applyPose = (o: THREE.Object3D, ps: Pose) => { o.position.copy(ps.p); o.quaternion.copy(ps.q); o.scale.copy(ps.s); };
+const localM = (x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, sc = 1) =>
+  new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sc, sc, sc));
+const frameM = (x: number, z: number, ry: number, y = 0) => new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z);
+
 export interface World {
   scene: THREE.Scene;
   grid: Int8Array;
@@ -566,6 +595,10 @@ export interface World {
   hemi: THREE.HemisphereLight;
   /** Grandfather clocks: position and pendulum phase (pendulum angle ~ sin(t*PI + phase)). */
   clocks: { x: number; z: number; phase: number }[];
+  /** Out-of-place objects that get tidied away in a cutscene once their room is spotless. */
+  mess: MessItem[];
+  /** Snap an item fully messy or fully tidy (pose + collision boxes). */
+  setMessState(item: MessItem, tidy: boolean): void;
   /** Positions of looping ambient sound sources (fireplace crackle, fountain water). */
   soundSources: { kind: 'fire' | 'water'; x: number; z: number }[];
   /** Drive animated furniture. t: seconds; hours: in-game clock time in hours (12 = midnight). */
@@ -764,6 +797,115 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     const swap = Math.abs(Math.sin(a)) > 0.5;
     addBox(f.x, f.z, swap ? d : w, swap ? w : d);
   };
+  // ---- mess: each out-of-place object is built from separate meshes with a messy pose and a tidy pose
+  const mess: MessItem[] = [];
+  const messRoot = new THREE.Group();
+  scene.add(messRoot);
+  const mkBox = (cx: number, cz: number, w: number, d: number): Box => ({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
+  const roomAt = (x: number, z: number) => {
+    const c = Math.floor(x / TILE), r = Math.floor(z / TILE);
+    return c < 0 || r < 0 || c >= COLS || r >= ROWS ? -1 : grid[r * COLS + c];
+  };
+  const newItem = (kind: MessItem['kind'], x: number, z: number): MessItem => {
+    const it: MessItem = { kind, room: roomAt(x, z), parts: [], messyBoxes: [], tidyBoxes: [], tidy: false, focus: new THREE.Vector3(), spread: 0, duration: PART_ANIM };
+    mess.push(it);
+    return it;
+  };
+  const addPart = (it: MessItem, obj: THREE.Object3D, from: THREE.Matrix4, to: THREE.Matrix4, delay = 0) => {
+    const part = { obj, from: poseOf(from), to: poseOf(to), delay };
+    applyPose(obj, part.from);
+    messRoot.add(obj);
+    it.parts.push(part);
+  };
+  const finishItem = (it: MessItem) => {
+    for (const b of it.messyBoxes) boxes.push(b);
+    const a = new THREE.Vector3(), b2 = new THREE.Vector3();
+    for (const pt of it.parts) { a.add(pt.from.p); b2.add(pt.to.p); }
+    a.divideScalar(it.parts.length); b2.divideScalar(it.parts.length);
+    it.focus.copy(a).add(b2).multiplyScalar(0.5).setY(0);
+    it.spread = Math.hypot(a.x - b2.x, a.z - b2.z);
+    it.duration = PART_ANIM + Math.max(...it.parts.map((pt) => pt.delay));
+  };
+  const geoMesh = (geo: THREE.BufferGeometry, mat: THREE.Material) => new THREE.Mesh(geo, mat);
+  // flat tops things can be put back onto
+  type Surf = { t: string; x: number; z: number; hw: number; hd: number; top: number; r: number; room: number };
+  const surfaces: Surf[] = FURNITURE.filter((f) => ['table', 'desk', 'roundtable', 'counter', 'stove', 'island'].includes(f.t)).map((f) => {
+    const w = f.w ?? 1, d = f.d ?? 1;
+    const swap = Math.abs(Math.sin(facingRot(f.f))) > 0.5;
+    const top = f.t === 'table' ? (f.h ?? 1.6) : f.t === 'desk' ? 1.65 : f.t === 'roundtable' ? 1.74 : 1.77;
+    return { t: f.t, x: f.x, z: f.z, hw: (swap ? d : w) / 2, hd: (swap ? w : d) / 2, top, r: f.t === 'roundtable' ? w / 2 : 0, room: roomAt(f.x, f.z) };
+  });
+  const surfDist = (sf: Surf, x: number, z: number) => sf.r
+    ? Math.max(0, Math.hypot(x - sf.x, z - sf.z) - sf.r)
+    : Math.hypot(Math.max(0, Math.abs(x - sf.x) - sf.hw), Math.max(0, Math.abs(z - sf.z) - sf.hd));
+  /** Nearest surface of the given kinds in the same room (long set dining tables excluded). */
+  const nearestSurf = (x: number, z: number, kinds: string[], maxD = Infinity) => {
+    const room = roomAt(x, z);
+    let best: Surf | null = null, bd = maxD;
+    for (const sf of surfaces) {
+      if (sf.room !== room || !kinds.includes(sf.t) || (sf.t === 'table' && sf.hw * 2 > 6 && kinds.length > 3)) continue;
+      const d = surfDist(sf, x, z);
+      if (d < bd) { bd = d; best = sf; }
+    }
+    return best;
+  };
+  /** A point on a surface's top near (x, z), at least `margin` in from its edge. */
+  const pointOn = (sf: Surf, x: number, z: number, margin: number): [number, number] => {
+    if (sf.r) {
+      const a = Math.atan2(z - sf.z, x - sf.x), rr = Math.max(0.9, sf.r - margin);
+      return [sf.x + Math.cos(a) * rr, sf.z + Math.sin(a) * rr];
+    }
+    const mx = Math.max(0, sf.hw - margin), mz = Math.max(0, sf.hd - margin);
+    return [Math.max(sf.x - mx, Math.min(sf.x + mx, x)), Math.max(sf.z - mz, Math.min(sf.z + mz, z))];
+  };
+  const boxesOverlap = (a: Box, b: Box) => a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ;
+  const areaIsFree = (bx: Box, room: number, ignore: Box[]) => {
+    for (const [x, z] of [[bx.minX, bx.minZ], [bx.maxX, bx.minZ], [bx.minX, bx.maxZ], [bx.maxX, bx.maxZ]]) if (roomAt(x, z) !== room) return false;
+    return !boxes.some((b) => !ignore.includes(b) && boxesOverlap(b, bx));
+  };
+  const chairLegs = (x: number, z: number, a: number) => [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]].map(([lx, lz]) => {
+    const [wx, wz] = rotXZ(lx, lz, a);
+    return mkBox(x + wx, z + wz, 0.22, 0.22);
+  });
+  /** Chair made of separate meshes in chair-local space (same shape as chairParts). */
+  const chairGroup = (seatMat: THREE.Material) => {
+    const g = new THREE.Group();
+    const bx = (mat: THREE.Material, cx: number, y0: number, cz: number, w: number, h: number, d: number) => {
+      const m = geoMesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(cx, y0 + h / 2, cz);
+      g.add(m);
+    };
+    for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) bx(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
+    bx(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
+    bx(seatMat, 0, 0.97, 0.03, 0.8, 0.08, 0.8);
+    bx(M.woodMed, 0, 0.97, -0.42, 0.95, 1.2, 0.1);
+    return g;
+  };
+  /** Nearest north/west/east wall spot of the room to hang a fallen painting: [x, z, ry]. */
+  const wallSpot = (x: number, z: number): [number, number, number] | null => {
+    const room = roomAt(x, z);
+    const c0 = Math.floor(x / TILE), r0 = Math.floor(z / TILE);
+    const isRoom = (c: number, r: number) => c >= 0 && r >= 0 && c < COLS && r < ROWS && grid[r * COLS + c] === room;
+    const isWall = (c: number, r: number) => c < 0 || r < 0 || c >= COLS || r >= ROWS || grid[r * COLS + c] < 0;
+    let best: [number, number, number] | null = null, bd = Infinity;
+    for (const [dc, dr, ry] of [[0, -1, 0], [-1, 0, Math.PI / 2], [1, 0, -Math.PI / 2]] as const) {
+      let c = c0, r = r0;
+      while (isRoom(c + dc, r + dr)) { c += dc; r += dr; }
+      if (!isWall(c + dc, r + dr)) continue; // runs into a doorway
+      // wall must continue on both sides, with this room's floor in front (no doorway next to it)
+      const pc = dr !== 0 ? 1 : 0, pr = dc !== 0 ? 1 : 0;
+      if (![-1, 1].every((k) => isWall(c + dc + pc * k, r + dr + pr * k) && isRoom(c + pc * k, r + pr * k))) continue;
+      const spot: [number, number, number] = dr !== 0 ? [x, r * TILE, ry] : [dc < 0 ? c * TILE : (c + 1) * TILE, z, ry];
+      const d = Math.hypot(spot[0] - x, spot[1] - z);
+      if (d < bd) { bd = d; best = spot; }
+    }
+    return best;
+  };
+  const roomCenter = (room: number): [number, number] => {
+    const [c0, r0, w, h] = ROOMS[room].rect;
+    return [(c0 + w / 2) * TILE, (r0 + h / 2) * TILE];
+  };
+
   const chairParts = (seatMat: THREE.Material) => {
     for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) sb.box(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
     sb.box(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
@@ -828,16 +970,39 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       }
       case 'tipchair': {
         const ang = rng() * Math.PI * 2;
-        sb.frame(f.x, f.z, ang, 0.48);
-        const inner = new THREE.Matrix4().makeTranslation(0, 0, 1.0).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-        sb.m.multiply(inner);
-        chairParts(M.red);
-        sb.reset();
+        const it = newItem('tipchair', f.x, f.z);
+        const from = frameM(f.x, f.z, ang, 0.48).multiply(new THREE.Matrix4().makeTranslation(0, 0, 1.0)).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
         // footprint ~1.0 x 2.1 centered roughly at offset
         const [ox, oz] = rotXZ(0, 0.05, ang);
         const ex = Math.abs(Math.cos(ang)) * 0.5 + Math.abs(Math.sin(ang)) * 1.0;
         const ez = Math.abs(Math.sin(ang)) * 0.5 + Math.abs(Math.cos(ang)) * 1.0;
-        addBox(f.x + ox, f.z + oz, ex * 2, ez * 2);
+        const cx = f.x + ox, cz = f.z + oz;
+        it.messyBoxes.push(mkBox(cx, cz, ex * 2, ez * 2));
+        // stand it back up: tucked in at a nearby table if there's room, otherwise where it fell
+        let px = cx, pz = cz;
+        let look: [number, number] = roomCenter(it.room);
+        const tb = nearestSurf(cx, cz, ['table', 'desk', 'roundtable'], 6);
+        if (tb) {
+          let sx: number, sz: number;
+          if (tb.r) {
+            const a2 = Math.atan2(cz - tb.z, cx - tb.x);
+            sx = tb.x + Math.cos(a2) * (tb.r + 0.85); sz = tb.z + Math.sin(a2) * (tb.r + 0.85);
+            look = [tb.x, tb.z];
+          } else if (Math.max(0, Math.abs(cx - tb.x) - tb.hw) > Math.max(0, Math.abs(cz - tb.z) - tb.hd)) {
+            sx = tb.x + Math.sign(cx - tb.x) * (tb.hw + 0.85);
+            sz = Math.max(tb.z - tb.hd + 0.6, Math.min(tb.z + tb.hd - 0.6, cz));
+            look = [tb.x, sz];
+          } else {
+            sz = tb.z + Math.sign(cz - tb.z) * (tb.hd + 0.85);
+            sx = Math.max(tb.x - tb.hw + 0.6, Math.min(tb.x + tb.hw - 0.6, cx));
+            look = [sx, tb.z];
+          }
+          if (areaIsFree(mkBox(sx, sz, 1.0, 1.0), it.room, it.messyBoxes)) { px = sx; pz = sz; }
+        }
+        const ry = Math.atan2(look[0] - px, look[1] - pz);
+        it.tidyBoxes.push(...chairLegs(px, pz, ry));
+        addPart(it, chairGroup(M.red), from, frameM(px, pz, ry));
+        finishItem(it);
         break;
       }
       case 'sofa':
@@ -1083,37 +1248,88 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'books': {
-        sb.frame(f.x, f.z, rng() * 6);
-        for (let k = 0; k < 5; k++) sb.box(M.books[k % 5], (rng() - 0.5) * 0.4, k * 0.12, (rng() - 0.5) * 0.4, 0.6, 0.11, 0.45, rng() * 3);
-        sb.box(M.books[2], 0.6, 0, 0.3, 0.55, 0.1, 0.42, 0.6);
-        sb.reset();
-        addBox(f.x, f.z, 1.1, 1.1);
+        const ang = rng() * 6;
+        const it = newItem('books', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 1.1, 1.1));
+        const F = frameM(f.x, f.z, ang);
+        const books: [THREE.Matrix4, number, number, number][] = [];
+        for (let k = 0; k < 5; k++) books.push([localM((rng() - 0.5) * 0.4, k * 0.12 + 0.055, (rng() - 0.5) * 0.4, 0, rng() * 3), 0.6, 0.11, 0.45]);
+        books.push([localM(0.6, 0.05, 0.3, 0, 0.6), 0.55, 0.1, 0.42]);
+        // a neat stack on the nearest table/desk in the room, or on the floor if there is none
+        const sf = nearestSurf(f.x, f.z, ['table', 'desk', 'roundtable', 'counter', 'island']);
+        let tx = f.x, tz = f.z, top = 0, base = 0;
+        if (sf) {
+          [tx, tz] = pointOn(sf, f.x, f.z, 0.6);
+          top = sf.top;
+          if (sf.r) base = Math.atan2(tx - sf.x, tz - sf.z);
+        } else {
+          it.tidyBoxes.push(mkBox(f.x, f.z, 0.8, 0.8));
+        }
+        let y = top;
+        books.forEach(([m, w, h, d], k) => {
+          y += h / 2;
+          addPart(it, geoMesh(new THREE.BoxGeometry(w, h, d), M.books[k === 5 ? 2 : k % 5]), F.clone().multiply(m), localM(tx, y, tz, 0, base + (k % 2 ? 0.07 : -0.05)), k * 0.12);
+          y += h / 2;
+        });
+        finishItem(it);
         break;
       }
       case 'vase': {
-        sb.frame(f.x, f.z, rng() * 6);
-        sb.cyl(M.marbleW, 0, -0.15, 0, 0.3, 0.2, 0.9, 12, 0, Math.PI / 2);
-        for (let k = 0; k < 6; k++) sb.box(M.marbleW, (rng() - 0.5) * 1.6, 0, (rng() - 0.5) * 1.6, 0.18, 0.05, 0.12, rng() * 3);
-        sb.sph(M.plant2, 0.7, 0.2, 0.1, 0.18);
-        sb.reset();
-        addBox(f.x, f.z, 0.9, 0.9);
+        const ang = rng() * 6;
+        const it = newItem('vase', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 0.9, 0.9));
+        it.tidyBoxes.push(mkBox(f.x, f.z, 0.65, 0.65));
+        const F = frameM(f.x, f.z, ang);
+        // stands back up, the shards fly back in, and the plant goes back on top
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.3, 0.2, 0.9, 12), M.marbleW), F.clone().multiply(localM(0, 0.3, 0, 0, 0, Math.PI / 2)), frameM(f.x, f.z, ang, 0.45));
+        for (let k = 0; k < 6; k++) {
+          const m = localM((rng() - 0.5) * 1.6, 0.025, (rng() - 0.5) * 1.6, 0, rng() * 3);
+          addPart(it, geoMesh(new THREE.BoxGeometry(0.18, 0.05, 0.12), M.marbleW), F.clone().multiply(m), localM(f.x, 0.75, f.z, 0, 0, 0, 0.01), 0.25 + k * 0.08);
+        }
+        addPart(it, geoMesh(new THREE.SphereGeometry(0.18, 10, 7), M.plant2), F.clone().multiply(localM(0.7, 0.2, 0.1)), localM(f.x, 0.98, f.z), 0.8);
+        finishItem(it);
         break;
       }
       case 'pots': {
-        sb.frame(f.x, f.z, rng() * 6);
-        sb.cyl(M.steel, 0, 0.1, 0, 0.35, 0.3, 0.5, 12, 0, Math.PI / 2);
-        sb.cyl(M.steel, 0.6, 0, 0.4, 0.3, 0.28, 0.35, 12);
-        sb.cyl(M.black, -0.5, 0, 0.5, 0.25, 0.25, 0.08, 12);
-        sb.reset();
-        addBox(f.x, f.z, 1.4, 1.2);
+        const ang = rng() * 6;
+        const it = newItem('pots', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 1.4, 1.2));
+        const F = frameM(f.x, f.z, ang);
+        // lined up on the nearest kitchen counter, or neatly in a row where they fell
+        const sf = nearestSurf(f.x, f.z, ['counter', 'stove', 'island']);
+        let tx = f.x, tz = f.z, top = 0, ry = 0;
+        if (sf) {
+          [tx, tz] = pointOn(sf, f.x, f.z, 1.0);
+          top = sf.top;
+          ry = sf.hw >= sf.hd ? 0 : Math.PI / 2;
+        } else {
+          it.tidyBoxes.push(mkBox(f.x, f.z, 2.3, 0.8));
+        }
+        const T = frameM(tx, tz, ry, top);
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.35, 0.3, 0.5, 12), M.steel), F.clone().multiply(localM(0, 0.35, 0, 0, 0, Math.PI / 2)), T.clone().multiply(localM(-0.75, 0.25, 0)), 0);
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.3, 0.28, 0.35, 12), M.steel), F.clone().multiply(localM(0.6, 0.175, 0.4)), T.clone().multiply(localM(0, 0.175, 0)), 0.15);
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.25, 0.25, 0.08, 12), M.black), F.clone().multiply(localM(-0.5, 0.04, 0.5)), T.clone().multiply(localM(0.72, 0.04, 0)), 0.3);
+        finishItem(it);
         break;
       }
       case 'frame': {
-        sb.frame(f.x, f.z, rng() * 6);
-        sb.box(M.gold, 0, 0, 0, 1.7, 0.1, 1.3);
-        sb.place(new THREE.PlaneGeometry(1.4, 1.0), portraits[2], 0, 0.11, 0, -Math.PI / 2);
-        sb.reset();
-        addBox(f.x, f.z, 1.6, 1.6);
+        const ang = rng() * 6;
+        const it = newItem('frame', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 1.6, 1.6));
+        const g = new THREE.Group();
+        const fb = geoMesh(new THREE.BoxGeometry(1.7, 0.1, 1.3), M.gold);
+        fb.position.y = 0.05;
+        const pic = geoMesh(new THREE.PlaneGeometry(1.4, 1.0), portraits[2]);
+        pic.position.y = 0.11;
+        pic.rotation.x = -Math.PI / 2;
+        g.add(fb, pic);
+        // hung back on the nearest side/back wall (face-up local +y becomes the wall's outward normal)
+        const spot = wallSpot(f.x, f.z);
+        let to = frameM(f.x, f.z, ang);
+        if (spot) to = frameM(spot[0] + Math.sin(spot[2]) * 0.02, spot[1] + Math.cos(spot[2]) * 0.02, spot[2], 2.6).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+        else it.tidyBoxes.push(mkBox(f.x, f.z, 1.6, 1.6));
+        addPart(it, g, frameM(f.x, f.z, ang), to);
+        finishItem(it);
         break;
       }
     }
@@ -1181,6 +1397,13 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   pl(72, 3.6, 33, 35, 22);
 
   const animate = (t: number, hours: number) => { for (const fn of animators) fn(t, hours); };
+  const setMessState = (it: MessItem, tidy: boolean) => {
+    for (const pt of it.parts) applyPose(pt.obj, tidy ? pt.to : pt.from);
+    const [rm, add] = tidy ? [it.messyBoxes, it.tidyBoxes] : [it.tidyBoxes, it.messyBoxes];
+    for (const b of rm) { const i = boxes.indexOf(b); if (i >= 0) boxes.splice(i, 1); }
+    for (const b of add) if (!boxes.includes(b)) boxes.push(b);
+    it.tidy = tidy;
+  };
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, soundSources, animate };
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, soundSources, mess, setMessState, animate };
 }
