@@ -175,6 +175,9 @@ export class Game {
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.touchAction = 'none';
+    // Canvas always stretches to fill its container via CSS; the drawing buffer is synced in onResize.
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 220);
     this.grid = buildGrid();
@@ -226,6 +229,14 @@ export class Game {
     this.setRoombaPower(0);
     this.onResize();
     window.addEventListener('resize', this.onResize);
+    window.addEventListener('orientationchange', this.onResize);
+    window.visualViewport?.addEventListener('resize', this.onResize);
+    // Mobile browsers can change the viewport (rotation, address bar, in-app webviews) without a
+    // timely window resize, so track the container's actual size directly.
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObs = new ResizeObserver(() => this.onResize());
+      this.resizeObs.observe(this.container);
+    }
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
@@ -240,6 +251,9 @@ export class Game {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('orientationchange', this.onResize);
+    window.visualViewport?.removeEventListener('resize', this.onResize);
+    this.resizeObs?.disconnect();
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
@@ -442,10 +456,13 @@ export class Game {
     return d;
   }
 
+  private resizeObs?: ResizeObserver;
+
   private onResize = () => {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
-    this.renderer.setSize(w, h);
+    // updateStyle=false: CSS keeps the canvas at 100% of the container, so a stale size never leaves it half-height.
+    this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.updatePointScale();
