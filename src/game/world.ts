@@ -59,6 +59,85 @@ export function patchCutaway(mat: THREE.Material, cut: CutUniforms, darkBack = f
   mat.customProgramCacheKey = () => (darkBack ? 'cutD' : 'cut');
 }
 
+// Furniture: fragments sitting between the camera and the roomba (i.e. tall pieces hiding it) are
+// faded to see-through with an ordered dither, which needs no sorting and works on merged meshes.
+// occFade() is shared with the outline material so edges show exactly where the furniture fades.
+const OCC_FADE_GLSL = `
+uniform vec3 uRoomba;
+uniform float uCut;
+float occFade(vec3 w) {
+  if (uCut < 0.5 || w.y <= 0.35) return 0.0;
+  vec3 ray = vec3(uRoomba.x, 0.25, uRoomba.z) - cameraPosition;
+  float len = length(ray);
+  vec3 dir = ray / len;
+  vec3 rel = w - cameraPosition;
+  float t = dot(rel, dir);
+  float perp = length(rel - dir * t);
+  return (1.0 - smoothstep(1.1, 2.3, perp)) * (1.0 - smoothstep(len - 1.4, len - 0.6, t));
+}
+`;
+
+export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRoomba = cut.uRoomba;
+    shader.uniforms.uCut = cut.uCut;
+    shader.vertexShader = 'varying vec3 vCutW;\n' + shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `#include <project_vertex>
+      vCutW = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
+    );
+    shader.fragmentShader = 'varying vec3 vCutW;\n' + OCC_FADE_GLSL + shader.fragmentShader.replace(
+      '#include <clipping_planes_fragment>',
+      `#include <clipping_planes_fragment>
+      float fade = occFade(vCutW);`,
+    ).replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+      // silhouette rim: where the surface turns away from the camera (sides of curved shapes) stays solid
+      float occRim = 0.0;
+      if (fade > 0.0) {
+        occRim = smoothstep(0.72, 0.9, 1.0 - abs(dot(normal, normalize(vViewPosition)))) * fade;
+        const float bayer[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+        ivec2 bp = ivec2(mod(gl_FragCoord.xy, 4.0));
+        float thr = (bayer[bp.x + bp.y * 4] + 0.5) / 16.0;
+        if (occRim < 0.5 && 1.0 - 0.6 * fade < thr) discard;
+      }`,
+    ).replace(
+      '#include <dithering_fragment>',
+      `#include <dithering_fragment>
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.78), occRim * 0.4);`,
+    );
+  };
+  mat.customProgramCacheKey = () => 'fade';
+}
+
+// Edge lines for faded furniture: invisible normally, drawn only where occFade() is active, so a
+// see-through object keeps a crisp outline.
+function makeOutlineMaterial(cut: CutUniforms) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uRoomba: cut.uRoomba, uCut: cut.uCut, uColor: { value: new THREE.Color(0xc8c8c8) } },
+    vertexShader: `
+      varying vec3 vW;
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        vW = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+        gl_Position.z -= 0.002 * gl_Position.w; // pull lines just in front of their own faces
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor;
+      varying vec3 vW;
+      ${OCC_FADE_GLSL}
+      void main() {
+        float fade = occFade(vW);
+        if (fade < 0.02) discard;
+        gl_FragColor = vec4(uColor, 0.4 * fade);
+      }`,
+    transparent: true,
+    depthWrite: false,
+  });
+}
+
 // ---------------------------------------------------------------- static builder
 class SB {
   map = new Map<THREE.Material, THREE.BufferGeometry[]>();
@@ -161,6 +240,27 @@ function blobTexture(inner: string, outer: string) {
   g.fillStyle = grd;
   g.fillRect(0, 0, 64, 64);
   const t = new THREE.CanvasTexture(c);
+  return t;
+}
+
+function globeTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 64;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#2a6a8a';
+  g.fillRect(0, 0, 128, 64);
+  const rng = makeRng(7);
+  g.fillStyle = '#5f8a4a';
+  for (let k = 0; k < 9; k++) {
+    const cx = rng() * 128, cy = 12 + rng() * 40;
+    for (let j = 0; j < 6; j++) {
+      g.beginPath();
+      g.ellipse(cx + (rng() - 0.5) * 18, cy + (rng() - 0.5) * 12, 4 + rng() * 8, 3 + rng() * 6, rng() * 3, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
 export const makeBlobTexture = blobTexture;
@@ -349,7 +449,7 @@ export interface RoombaModel {
   eyes: THREE.Mesh[];
   brushes: THREE.Group[];
   light: THREE.PointLight;
-  glow: THREE.Sprite;
+  glow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
 }
 
 function makeRoomba(): RoombaModel {
@@ -407,11 +507,14 @@ function makeRoomba(): RoombaModel {
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.012;
   group.add(shadow);
-  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+  // Glow lies flat on the floor as a halo: a camera-facing sprite sank half into the floor and got clipped.
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
     map: blobTexture('rgba(120,240,255,0.55)', 'rgba(0,200,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
+  glow.rotation.x = -Math.PI / 2;
   glow.scale.set(2.4, 2.4, 1);
-  glow.position.y = 0.3;
+  glow.position.y = 0.02;
+  glow.renderOrder = 2;
   group.add(glow);
   const light = new THREE.PointLight(0x9feaff, 0, 15, 2);
   light.position.set(0, 2.6, 0.4);
@@ -449,6 +552,35 @@ function makeDock(): DockModel {
 }
 
 // ---------------------------------------------------------------- world
+// ---------------------------------------------------------------- mess (out-of-place objects)
+export interface Pose { p: THREE.Vector3; q: THREE.Quaternion; s: THREE.Vector3 }
+export interface MessPart { obj: THREE.Object3D; from: Pose; to: Pose; delay: number }
+export interface MessItem {
+  kind: 'tipchair' | 'books' | 'vase' | 'pots' | 'frame';
+  room: number;
+  parts: MessPart[];
+  messyBoxes: Box[];
+  tidyBoxes: Box[];
+  tidy: boolean;
+  /** Where the cutscene camera should look, and how far apart the messy/tidy spots are. */
+  focus: THREE.Vector3;
+  spread: number;
+  /** Seconds this item's tidy animation takes (part animation + the last part's delay). */
+  duration: number;
+}
+/** Seconds one part takes to lift, travel and settle. */
+export const PART_ANIM = 1.5;
+
+const poseOf = (m: THREE.Matrix4): Pose => {
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  m.decompose(p, q, s);
+  return { p, q, s };
+};
+const applyPose = (o: THREE.Object3D, ps: Pose) => { o.position.copy(ps.p); o.quaternion.copy(ps.q); o.scale.copy(ps.s); };
+const localM = (x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, sc = 1) =>
+  new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sc, sc, sc));
+const frameM = (x: number, z: number, ry: number, y = 0) => new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z);
+
 export interface World {
   scene: THREE.Scene;
   grid: Int8Array;
@@ -461,6 +593,16 @@ export interface World {
   lights: { light: THREE.PointLight; base: number }[];
   ambient: THREE.AmbientLight;
   hemi: THREE.HemisphereLight;
+  /** Grandfather clocks: position and pendulum phase (pendulum angle ~ sin(t*PI + phase)). */
+  clocks: { x: number; z: number; phase: number }[];
+  /** Out-of-place objects that get tidied away in a cutscene once their room is spotless. */
+  mess: MessItem[];
+  /** Snap an item fully messy or fully tidy (pose + collision boxes). */
+  setMessState(item: MessItem, tidy: boolean): void;
+  /** Positions of looping ambient sound sources (fireplace crackle, fountain water). */
+  soundSources: { kind: 'fire' | 'water'; x: number; z: number }[];
+  /** Drive animated furniture. t: seconds; hours: in-game clock time in hours (12 = midnight). */
+  animate(t: number, hours: number): void;
 }
 
 export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
@@ -471,9 +613,14 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
   const boxes: Box[] = [];
   const addBox = (cx: number, cz: number, w: number, d: number) => boxes.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 
+  // Walls (and things hung on them) get the cutaway so they never hide the roomba; furniture uses
+  // an otherwise identical material set that instead fades see-through only where it blocks the roomba.
+  const fadeMats = new Set<THREE.Material>();
+  const makeMats = (cutaway: boolean) => {
   const L = (color: number, opts: THREE.MeshLambertMaterialParameters = {}, dark = false) => {
     const m = new THREE.MeshLambertMaterial({ color, ...opts });
-    patchCutaway(m, cut, dark);
+    if (cutaway) patchCutaway(m, cut, dark);
+    else { patchOccluderFade(m, cut); fadeMats.add(m); }
     return m;
   };
   const M = {
@@ -506,6 +653,9 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
     globe: L(0x2a6a8a),
   };
   const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1) }));
+  return { M, portraits };
+  };
+  let { M, portraits } = makeMats(true);
 
   // ---- floor
   const floorTex = floorTexture(grid);
@@ -612,7 +762,32 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   windowAt(2, 47, Math.PI / 2);
   windowAt(2, 37, Math.PI / 2);
 
-  // ---- furniture
+  // ---- furniture (fades when blocking the roomba, never cut away)
+  // Moving parts are real meshes (not merged into the statics) and are driven by animate().
+  const animators: ((t: number, hours: number) => void)[] = [];
+  const clocks: World['clocks'] = [];
+  const soundSources: World['soundSources'] = [];
+  const animRoot = new THREE.Group();
+  scene.add(animRoot);
+  const anchor = (x: number, z: number, ry: number) => {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    animRoot.add(g);
+    return g;
+  };
+  const part = (geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    return m;
+  };
+  const globeMat = new THREE.MeshLambertMaterial({ map: globeTexture() });
+  patchOccluderFade(globeMat, cut);
+  const flameMats = [0xff7a1a, 0xffc040].map((color) => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  const rippleMat = () => new THREE.MeshBasicMaterial({ color: 0xcfefff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
+  ({ M, portraits } = makeMats(false));
   const rng = makeRng(42);
   const legsCollide = (x: number, z: number, a: number, pts: [number, number][], s = 0.3) => {
     for (const [lx, lz] of pts) { const [wx, wz] = rotXZ(lx, lz, a); addBox(x + wx, z + wz, s, s); }
@@ -622,6 +797,115 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     const swap = Math.abs(Math.sin(a)) > 0.5;
     addBox(f.x, f.z, swap ? d : w, swap ? w : d);
   };
+  // ---- mess: each out-of-place object is built from separate meshes with a messy pose and a tidy pose
+  const mess: MessItem[] = [];
+  const messRoot = new THREE.Group();
+  scene.add(messRoot);
+  const mkBox = (cx: number, cz: number, w: number, d: number): Box => ({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
+  const roomAt = (x: number, z: number) => {
+    const c = Math.floor(x / TILE), r = Math.floor(z / TILE);
+    return c < 0 || r < 0 || c >= COLS || r >= ROWS ? -1 : grid[r * COLS + c];
+  };
+  const newItem = (kind: MessItem['kind'], x: number, z: number): MessItem => {
+    const it: MessItem = { kind, room: roomAt(x, z), parts: [], messyBoxes: [], tidyBoxes: [], tidy: false, focus: new THREE.Vector3(), spread: 0, duration: PART_ANIM };
+    mess.push(it);
+    return it;
+  };
+  const addPart = (it: MessItem, obj: THREE.Object3D, from: THREE.Matrix4, to: THREE.Matrix4, delay = 0) => {
+    const part = { obj, from: poseOf(from), to: poseOf(to), delay };
+    applyPose(obj, part.from);
+    messRoot.add(obj);
+    it.parts.push(part);
+  };
+  const finishItem = (it: MessItem) => {
+    for (const b of it.messyBoxes) boxes.push(b);
+    const a = new THREE.Vector3(), b2 = new THREE.Vector3();
+    for (const pt of it.parts) { a.add(pt.from.p); b2.add(pt.to.p); }
+    a.divideScalar(it.parts.length); b2.divideScalar(it.parts.length);
+    it.focus.copy(a).add(b2).multiplyScalar(0.5).setY(0);
+    it.spread = Math.hypot(a.x - b2.x, a.z - b2.z);
+    it.duration = PART_ANIM + Math.max(...it.parts.map((pt) => pt.delay));
+  };
+  const geoMesh = (geo: THREE.BufferGeometry, mat: THREE.Material) => new THREE.Mesh(geo, mat);
+  // flat tops things can be put back onto
+  type Surf = { t: string; x: number; z: number; hw: number; hd: number; top: number; r: number; room: number };
+  const surfaces: Surf[] = FURNITURE.filter((f) => ['table', 'desk', 'roundtable', 'counter', 'stove', 'island'].includes(f.t)).map((f) => {
+    const w = f.w ?? 1, d = f.d ?? 1;
+    const swap = Math.abs(Math.sin(facingRot(f.f))) > 0.5;
+    const top = f.t === 'table' ? (f.h ?? 1.6) : f.t === 'desk' ? 1.65 : f.t === 'roundtable' ? 1.74 : 1.77;
+    return { t: f.t, x: f.x, z: f.z, hw: (swap ? d : w) / 2, hd: (swap ? w : d) / 2, top, r: f.t === 'roundtable' ? w / 2 : 0, room: roomAt(f.x, f.z) };
+  });
+  const surfDist = (sf: Surf, x: number, z: number) => sf.r
+    ? Math.max(0, Math.hypot(x - sf.x, z - sf.z) - sf.r)
+    : Math.hypot(Math.max(0, Math.abs(x - sf.x) - sf.hw), Math.max(0, Math.abs(z - sf.z) - sf.hd));
+  /** Nearest surface of the given kinds in the same room (long set dining tables excluded). */
+  const nearestSurf = (x: number, z: number, kinds: string[], maxD = Infinity) => {
+    const room = roomAt(x, z);
+    let best: Surf | null = null, bd = maxD;
+    for (const sf of surfaces) {
+      if (sf.room !== room || !kinds.includes(sf.t) || (sf.t === 'table' && sf.hw * 2 > 6 && kinds.length > 3)) continue;
+      const d = surfDist(sf, x, z);
+      if (d < bd) { bd = d; best = sf; }
+    }
+    return best;
+  };
+  /** A point on a surface's top near (x, z), at least `margin` in from its edge. */
+  const pointOn = (sf: Surf, x: number, z: number, margin: number): [number, number] => {
+    if (sf.r) {
+      const a = Math.atan2(z - sf.z, x - sf.x), rr = Math.max(0.9, sf.r - margin);
+      return [sf.x + Math.cos(a) * rr, sf.z + Math.sin(a) * rr];
+    }
+    const mx = Math.max(0, sf.hw - margin), mz = Math.max(0, sf.hd - margin);
+    return [Math.max(sf.x - mx, Math.min(sf.x + mx, x)), Math.max(sf.z - mz, Math.min(sf.z + mz, z))];
+  };
+  const boxesOverlap = (a: Box, b: Box) => a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ;
+  const areaIsFree = (bx: Box, room: number, ignore: Box[]) => {
+    for (const [x, z] of [[bx.minX, bx.minZ], [bx.maxX, bx.minZ], [bx.minX, bx.maxZ], [bx.maxX, bx.maxZ]]) if (roomAt(x, z) !== room) return false;
+    return !boxes.some((b) => !ignore.includes(b) && boxesOverlap(b, bx));
+  };
+  const chairLegs = (x: number, z: number, a: number) => [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]].map(([lx, lz]) => {
+    const [wx, wz] = rotXZ(lx, lz, a);
+    return mkBox(x + wx, z + wz, 0.22, 0.22);
+  });
+  /** Chair made of separate meshes in chair-local space (same shape as chairParts). */
+  const chairGroup = (seatMat: THREE.Material) => {
+    const g = new THREE.Group();
+    const bx = (mat: THREE.Material, cx: number, y0: number, cz: number, w: number, h: number, d: number) => {
+      const m = geoMesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(cx, y0 + h / 2, cz);
+      g.add(m);
+    };
+    for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) bx(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
+    bx(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
+    bx(seatMat, 0, 0.97, 0.03, 0.8, 0.08, 0.8);
+    bx(M.woodMed, 0, 0.97, -0.42, 0.95, 1.2, 0.1);
+    return g;
+  };
+  /** Nearest north/west/east wall spot of the room to hang a fallen painting: [x, z, ry]. */
+  const wallSpot = (x: number, z: number): [number, number, number] | null => {
+    const room = roomAt(x, z);
+    const c0 = Math.floor(x / TILE), r0 = Math.floor(z / TILE);
+    const isRoom = (c: number, r: number) => c >= 0 && r >= 0 && c < COLS && r < ROWS && grid[r * COLS + c] === room;
+    const isWall = (c: number, r: number) => c < 0 || r < 0 || c >= COLS || r >= ROWS || grid[r * COLS + c] < 0;
+    let best: [number, number, number] | null = null, bd = Infinity;
+    for (const [dc, dr, ry] of [[0, -1, 0], [-1, 0, Math.PI / 2], [1, 0, -Math.PI / 2]] as const) {
+      let c = c0, r = r0;
+      while (isRoom(c + dc, r + dr)) { c += dc; r += dr; }
+      if (!isWall(c + dc, r + dr)) continue; // runs into a doorway
+      // wall must continue on both sides, with this room's floor in front (no doorway next to it)
+      const pc = dr !== 0 ? 1 : 0, pr = dc !== 0 ? 1 : 0;
+      if (![-1, 1].every((k) => isWall(c + dc + pc * k, r + dr + pr * k) && isRoom(c + pc * k, r + pr * k))) continue;
+      const spot: [number, number, number] = dr !== 0 ? [x, r * TILE, ry] : [dc < 0 ? c * TILE : (c + 1) * TILE, z, ry];
+      const d = Math.hypot(spot[0] - x, spot[1] - z);
+      if (d < bd) { bd = d; best = spot; }
+    }
+    return best;
+  };
+  const roomCenter = (room: number): [number, number] => {
+    const [c0, r0, w, h] = ROOMS[room].rect;
+    return [(c0 + w / 2) * TILE, (r0 + h / 2) * TILE];
+  };
+
   const chairParts = (seatMat: THREE.Material) => {
     for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) sb.box(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
     sb.box(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
@@ -686,16 +970,39 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       }
       case 'tipchair': {
         const ang = rng() * Math.PI * 2;
-        sb.frame(f.x, f.z, ang, 0.48);
-        const inner = new THREE.Matrix4().makeTranslation(0, 0, 1.0).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-        sb.m.multiply(inner);
-        chairParts(M.red);
-        sb.reset();
+        const it = newItem('tipchair', f.x, f.z);
+        const from = frameM(f.x, f.z, ang, 0.48).multiply(new THREE.Matrix4().makeTranslation(0, 0, 1.0)).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
         // footprint ~1.0 x 2.1 centered roughly at offset
         const [ox, oz] = rotXZ(0, 0.05, ang);
         const ex = Math.abs(Math.cos(ang)) * 0.5 + Math.abs(Math.sin(ang)) * 1.0;
         const ez = Math.abs(Math.sin(ang)) * 0.5 + Math.abs(Math.cos(ang)) * 1.0;
-        addBox(f.x + ox, f.z + oz, ex * 2, ez * 2);
+        const cx = f.x + ox, cz = f.z + oz;
+        it.messyBoxes.push(mkBox(cx, cz, ex * 2, ez * 2));
+        // stand it back up: tucked in at a nearby table if there's room, otherwise where it fell
+        let px = cx, pz = cz;
+        let look: [number, number] = roomCenter(it.room);
+        const tb = nearestSurf(cx, cz, ['table', 'desk', 'roundtable'], 6);
+        if (tb) {
+          let sx: number, sz: number;
+          if (tb.r) {
+            const a2 = Math.atan2(cz - tb.z, cx - tb.x);
+            sx = tb.x + Math.cos(a2) * (tb.r + 0.85); sz = tb.z + Math.sin(a2) * (tb.r + 0.85);
+            look = [tb.x, tb.z];
+          } else if (Math.max(0, Math.abs(cx - tb.x) - tb.hw) > Math.max(0, Math.abs(cz - tb.z) - tb.hd)) {
+            sx = tb.x + Math.sign(cx - tb.x) * (tb.hw + 0.85);
+            sz = Math.max(tb.z - tb.hd + 0.6, Math.min(tb.z + tb.hd - 0.6, cz));
+            look = [tb.x, sz];
+          } else {
+            sz = tb.z + Math.sign(cz - tb.z) * (tb.hd + 0.85);
+            sx = Math.max(tb.x - tb.hw + 0.6, Math.min(tb.x + tb.hw - 0.6, cx));
+            look = [sx, tb.z];
+          }
+          if (areaIsFree(mkBox(sx, sz, 1.0, 1.0), it.room, it.messyBoxes)) { px = sx; pz = sz; }
+        }
+        const ry = Math.atan2(look[0] - px, look[1] - pz);
+        it.tidyBoxes.push(...chairLegs(px, pz, ry));
+        addPart(it, chairGroup(M.red), from, frameM(px, pz, ry));
+        finishItem(it);
         break;
       }
       case 'sofa':
@@ -810,9 +1117,36 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.box(M.woodMed, 0, 3.9, 0, 1.35, 0.25, 0.9);
         sb.place(new THREE.CylinderGeometry(0.4, 0.4, 0.05, 20), M.gold, 0, 3.2, 0.42, Math.PI / 2);
         sb.box(M.black, 0, 0.8, 0.39, 0.6, 1.7, 0.04);
-        sb.cyl(M.gold, 0, 1.0, 0.43, 0.15, 0.15, 0.03, 12, Math.PI / 2);
         sb.reset();
         fullBox(f, 1.2, 0.8);
+        {
+          const g = anchor(f.x, f.z, a);
+          // hands, pivoting at the dial centre and following the in-game night clock
+          const hub = new THREE.Group();
+          hub.position.set(0, 3.2, 0.455);
+          const hourHand = new THREE.Group();
+          hourHand.add(part(new THREE.BoxGeometry(0.06, 0.22, 0.015), M.black, 0, 0.09, 0));
+          const minHand = new THREE.Group();
+          minHand.add(part(new THREE.BoxGeometry(0.035, 0.33, 0.015), M.black, 0, 0.14, 0.015));
+          hub.add(hourHand, minHand, part(new THREE.CylinderGeometry(0.035, 0.035, 0.05, 10), M.gold, 0, 0, 0.01));
+          hub.children[2].rotation.x = Math.PI / 2;
+          // pendulum swinging behind the glass, one tick per second
+          const pend = new THREE.Group();
+          pend.position.set(0, 2.4, 0.43);
+          pend.add(part(new THREE.BoxGeometry(0.03, 1.25, 0.02), M.gold, 0, -0.625, 0));
+          const bob = part(new THREE.CylinderGeometry(0.15, 0.15, 0.03, 16), M.gold, 0, -1.4, 0);
+          bob.rotation.x = Math.PI / 2;
+          pend.add(bob);
+          g.add(hub, pend);
+          const phase = (f.x * 7.3 + f.z * 3.1) % 6;
+          clocks.push({ x: f.x, z: f.z, phase });
+          animators.push((t, hours) => {
+            const h = hours % 12;
+            hourHand.rotation.z = -(h / 12) * Math.PI * 2;
+            minHand.rotation.z = -(h % 1) * Math.PI * 2;
+            pend.rotation.z = 0.2 * Math.sin(t * Math.PI + phase);
+          });
+        }
         break;
       }
       case 'fireplace': {
@@ -823,6 +1157,29 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.box(M.woodMed, 0, 3, 0.1, w + 0.4, 0.2, d + 0.2);
         sb.reset();
         fullBox(f, w, d);
+        {
+          const g = anchor(f.x, f.z, a);
+          const flames: { m: THREE.Mesh; k: number; base: number }[] = [];
+          const n = 5;
+          for (let k = 0; k < n; k++) {
+            const inner = k % 2 === 1;
+            const geo = new THREE.ConeGeometry(inner ? 0.12 : 0.18, 1, 8);
+            geo.translate(0, 0.5, 0); // scale from the base
+            const m = part(geo, flameMats[inner ? 1 : 0], (k / (n - 1) - 0.5) * w * 0.3, 0.3, d / 2 - 0.2 + (inner ? 0.06 : 0));
+            g.add(m);
+            flames.push({ m, k, base: inner ? 0.45 : 0.65 });
+          }
+          soundSources.push({ kind: 'fire', x: f.x, z: f.z });
+          const ember = M.ember as THREE.MeshLambertMaterial;
+          animators.push((t) => {
+            for (const fl of flames) {
+              const n1 = Math.sin(t * 9 + fl.k * 1.7) * 0.5 + Math.sin(t * 15.3 + fl.k * 4.1) * 0.3;
+              fl.m.scale.set(1 + n1 * 0.15, fl.base * (1 + n1 * 0.35), 1 + n1 * 0.15);
+              fl.m.rotation.z = Math.sin(t * 5 + fl.k) * 0.08;
+            }
+            ember.emissiveIntensity = 0.75 + 0.25 * Math.sin(t * 6.3) * Math.sin(t * 2.9);
+          });
+        }
         break;
       }
       case 'desk': {
@@ -841,9 +1198,19 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.frame(f.x, f.z, 0);
         sb.cyl(M.woodDark, 0, 0, 0, 0.3, 0.4, 0.15);
         sb.cyl(M.woodDark, 0, 0.15, 0, 0.06, 0.06, 1.0);
-        sb.sph(M.globe, 0, 1.5, 0, 0.45, 14);
         sb.reset();
         addBox(f.x, f.z, 0.85, 0.85);
+        {
+          const g = anchor(f.x, f.z, 0);
+          const tilt = new THREE.Group();
+          tilt.position.y = 1.5;
+          tilt.rotation.z = 0.41; // axial tilt
+          const sphere = part(new THREE.SphereGeometry(0.45, 20, 14), globeMat);
+          tilt.add(sphere, part(new THREE.TorusGeometry(0.52, 0.025, 6, 28), M.gold));
+          g.add(tilt);
+          const spin = 0.35 + ((f.x + f.z) % 1) * 0.2;
+          animators.push((t) => { sphere.rotation.y = t * spin; });
+        }
         break;
       }
       case 'fountain': {
@@ -855,46 +1222,129 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.cyl(M.water, 0, 2.2, 0, 0.6, 0.6, 0.02, 16);
         sb.reset();
         addBox(f.x, f.z, 3.4, 3.4);
+        {
+          soundSources.push({ kind: 'water', x: f.x, z: f.z });
+          const g = anchor(f.x, f.z, 0);
+          // ripples spreading out from the column on the lower basin, and gently in the top bowl
+          const rings: { m: THREE.Mesh; mat: THREE.MeshBasicMaterial; r0: number; r1: number; off: number; peak: number }[] = [];
+          const ring = (y: number, r0: number, r1: number, off: number, peak: number) => {
+            const mat = rippleMat();
+            const m = part(new THREE.RingGeometry(0.92, 1, 40), mat, 0, y, 0);
+            m.rotation.x = -Math.PI / 2;
+            g.add(m);
+            rings.push({ m, mat, r0, r1, off, peak });
+          };
+          for (let k = 0; k < 3; k++) ring(0.74, 0.35, 1.45, k / 3, 0.45);
+          for (let k = 0; k < 2; k++) ring(2.225, 0.1, 0.55, k / 2, 0.35);
+          animators.push((t) => {
+            for (const r of rings) {
+              const p = (t / 2.6 + r.off) % 1;
+              const s = r.r0 + (r.r1 - r.r0) * p;
+              r.m.scale.set(s, s, 1);
+              r.mat.opacity = r.peak * Math.sin(p * Math.PI);
+            }
+          });
+        }
         break;
       }
       case 'books': {
-        sb.frame(f.x, f.z, rng() * 6);
-        for (let k = 0; k < 5; k++) sb.box(M.books[k % 5], (rng() - 0.5) * 0.4, k * 0.12, (rng() - 0.5) * 0.4, 0.6, 0.11, 0.45, rng() * 3);
-        sb.box(M.books[2], 0.6, 0, 0.3, 0.55, 0.1, 0.42, 0.6);
-        sb.reset();
-        addBox(f.x, f.z, 1.1, 1.1);
+        const ang = rng() * 6;
+        const it = newItem('books', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 1.1, 1.1));
+        const F = frameM(f.x, f.z, ang);
+        const books: [THREE.Matrix4, number, number, number][] = [];
+        for (let k = 0; k < 5; k++) books.push([localM((rng() - 0.5) * 0.4, k * 0.12 + 0.055, (rng() - 0.5) * 0.4, 0, rng() * 3), 0.6, 0.11, 0.45]);
+        books.push([localM(0.6, 0.05, 0.3, 0, 0.6), 0.55, 0.1, 0.42]);
+        // a neat stack on the nearest table/desk in the room, or on the floor if there is none
+        const sf = nearestSurf(f.x, f.z, ['table', 'desk', 'roundtable', 'counter', 'island']);
+        let tx = f.x, tz = f.z, top = 0, base = 0;
+        if (sf) {
+          [tx, tz] = pointOn(sf, f.x, f.z, 0.6);
+          top = sf.top;
+          if (sf.r) base = Math.atan2(tx - sf.x, tz - sf.z);
+        } else {
+          it.tidyBoxes.push(mkBox(f.x, f.z, 0.8, 0.8));
+        }
+        let y = top;
+        books.forEach(([m, w, h, d], k) => {
+          y += h / 2;
+          addPart(it, geoMesh(new THREE.BoxGeometry(w, h, d), M.books[k === 5 ? 2 : k % 5]), F.clone().multiply(m), localM(tx, y, tz, 0, base + (k % 2 ? 0.07 : -0.05)), k * 0.12);
+          y += h / 2;
+        });
+        finishItem(it);
         break;
       }
       case 'vase': {
-        sb.frame(f.x, f.z, rng() * 6);
-        sb.cyl(M.marbleW, 0, -0.15, 0, 0.3, 0.2, 0.9, 12, 0, Math.PI / 2);
-        for (let k = 0; k < 6; k++) sb.box(M.marbleW, (rng() - 0.5) * 1.6, 0, (rng() - 0.5) * 1.6, 0.18, 0.05, 0.12, rng() * 3);
-        sb.sph(M.plant2, 0.7, 0.2, 0.1, 0.18);
-        sb.reset();
-        addBox(f.x, f.z, 0.9, 0.9);
+        const ang = rng() * 6;
+        const it = newItem('vase', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 0.9, 0.9));
+        it.tidyBoxes.push(mkBox(f.x, f.z, 0.65, 0.65));
+        const F = frameM(f.x, f.z, ang);
+        // stands back up, the shards fly back in, and the plant goes back on top
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.3, 0.2, 0.9, 12), M.marbleW), F.clone().multiply(localM(0, 0.3, 0, 0, 0, Math.PI / 2)), frameM(f.x, f.z, ang, 0.45));
+        for (let k = 0; k < 6; k++) {
+          const m = localM((rng() - 0.5) * 1.6, 0.025, (rng() - 0.5) * 1.6, 0, rng() * 3);
+          addPart(it, geoMesh(new THREE.BoxGeometry(0.18, 0.05, 0.12), M.marbleW), F.clone().multiply(m), localM(f.x, 0.75, f.z, 0, 0, 0, 0.01), 0.25 + k * 0.08);
+        }
+        addPart(it, geoMesh(new THREE.SphereGeometry(0.18, 10, 7), M.plant2), F.clone().multiply(localM(0.7, 0.2, 0.1)), localM(f.x, 0.98, f.z), 0.8);
+        finishItem(it);
         break;
       }
       case 'pots': {
-        sb.frame(f.x, f.z, rng() * 6);
-        sb.cyl(M.steel, 0, 0.1, 0, 0.35, 0.3, 0.5, 12, 0, Math.PI / 2);
-        sb.cyl(M.steel, 0.6, 0, 0.4, 0.3, 0.28, 0.35, 12);
-        sb.cyl(M.black, -0.5, 0, 0.5, 0.25, 0.25, 0.08, 12);
-        sb.reset();
-        addBox(f.x, f.z, 1.4, 1.2);
+        const ang = rng() * 6;
+        const it = newItem('pots', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 1.4, 1.2));
+        const F = frameM(f.x, f.z, ang);
+        // lined up on the nearest kitchen counter, or neatly in a row where they fell
+        const sf = nearestSurf(f.x, f.z, ['counter', 'stove', 'island']);
+        let tx = f.x, tz = f.z, top = 0, ry = 0;
+        if (sf) {
+          [tx, tz] = pointOn(sf, f.x, f.z, 1.0);
+          top = sf.top;
+          ry = sf.hw >= sf.hd ? 0 : Math.PI / 2;
+        } else {
+          it.tidyBoxes.push(mkBox(f.x, f.z, 2.3, 0.8));
+        }
+        const T = frameM(tx, tz, ry, top);
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.35, 0.3, 0.5, 12), M.steel), F.clone().multiply(localM(0, 0.35, 0, 0, 0, Math.PI / 2)), T.clone().multiply(localM(-0.75, 0.25, 0)), 0);
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.3, 0.28, 0.35, 12), M.steel), F.clone().multiply(localM(0.6, 0.175, 0.4)), T.clone().multiply(localM(0, 0.175, 0)), 0.15);
+        addPart(it, geoMesh(new THREE.CylinderGeometry(0.25, 0.25, 0.08, 12), M.black), F.clone().multiply(localM(-0.5, 0.04, 0.5)), T.clone().multiply(localM(0.72, 0.04, 0)), 0.3);
+        finishItem(it);
         break;
       }
       case 'frame': {
-        sb.frame(f.x, f.z, rng() * 6);
-        sb.box(M.gold, 0, 0, 0, 1.7, 0.1, 1.3);
-        sb.place(new THREE.PlaneGeometry(1.4, 1.0), portraits[2], 0, 0.11, 0, -Math.PI / 2);
-        sb.reset();
-        addBox(f.x, f.z, 1.6, 1.6);
+        const ang = rng() * 6;
+        const it = newItem('frame', f.x, f.z);
+        it.messyBoxes.push(mkBox(f.x, f.z, 1.6, 1.6));
+        const g = new THREE.Group();
+        const fb = geoMesh(new THREE.BoxGeometry(1.7, 0.1, 1.3), M.gold);
+        fb.position.y = 0.05;
+        const pic = geoMesh(new THREE.PlaneGeometry(1.4, 1.0), portraits[2]);
+        pic.position.y = 0.11;
+        pic.rotation.x = -Math.PI / 2;
+        g.add(fb, pic);
+        // hung back on the nearest side/back wall (face-up local +y becomes the wall's outward normal)
+        const spot = wallSpot(f.x, f.z);
+        let to = frameM(f.x, f.z, ang);
+        if (spot) to = frameM(spot[0] + Math.sin(spot[2]) * 0.02, spot[1] + Math.cos(spot[2]) * 0.02, spot[2], 2.6).multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+        else it.tidyBoxes.push(mkBox(f.x, f.z, 1.6, 1.6));
+        addPart(it, g, frameM(f.x, f.z, ang), to);
+        finishItem(it);
         break;
       }
     }
   }
   const statics = new THREE.Group();
   sb.build(statics);
+  // outline edges for every furniture mesh (only drawn while that furniture is faded)
+  const outlineMat = makeOutlineMaterial(cut);
+  for (const child of [...statics.children]) {
+    if (!(child instanceof THREE.Mesh) || !fadeMats.has(child.material)) continue;
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry, 35), outlineMat);
+    edges.matrixAutoUpdate = false;
+    edges.renderOrder = 5;
+    statics.add(edges);
+  }
   scene.add(statics);
 
   // ---- intro-only decor: ceiling & chandeliers
@@ -946,5 +1396,14 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   pl(20, 3.6, 12, 35, 22);
   pl(72, 3.6, 33, 35, 22);
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi };
+  const animate = (t: number, hours: number) => { for (const fn of animators) fn(t, hours); };
+  const setMessState = (it: MessItem, tidy: boolean) => {
+    for (const pt of it.parts) applyPose(pt.obj, tidy ? pt.to : pt.from);
+    const [rm, add] = tidy ? [it.messyBoxes, it.tidyBoxes] : [it.tidyBoxes, it.messyBoxes];
+    for (const b of rm) { const i = boxes.indexOf(b); if (i >= 0) boxes.splice(i, 1); }
+    for (const b of add) if (!boxes.includes(b)) boxes.push(b);
+    it.tidy = tidy;
+  };
+
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, soundSources, mess, setMessState, animate };
 }

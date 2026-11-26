@@ -112,7 +112,7 @@ export default function App() {
       {flash > 0 && <div key={flash} className="absolute inset-0 pointer-events-none flash" style={{ background: 'radial-gradient(circle, rgba(255,240,190,0.9), rgba(255,210,120,0.3))' }} />}
 
       {/* toasts */}
-      {(phase === 'playing' || phase === 'intro') && (
+      {(phase === 'playing' || phase === 'intro' || phase === 'tidy') && (
         <div className="absolute left-1/2 -translate-x-1/2 top-[150px] sm:top-[140px] flex flex-col items-center gap-2 pointer-events-none w-[92vw] max-w-xl">
           {toasts.map((t) => (
             <div
@@ -127,7 +127,7 @@ export default function App() {
       )}
 
       {/* cinematic captions */}
-      {(phase === 'intro' || phase === 'playing') && caption && (
+      {(phase === 'intro' || phase === 'playing' || phase === 'tidy') && caption && (
         <div className="absolute inset-x-0 bottom-[18%] flex justify-center pointer-events-none px-4">
           <div
             key={caption.id}
@@ -146,6 +146,19 @@ export default function App() {
           <div className="absolute inset-0" onPointerDown={() => game?.skipIntro()} />
           <button
             onClick={() => game?.skipIntro()}
+            className="absolute right-4 bottom-[calc(9vh+12px)] btn-ghost rounded-full px-4 py-1.5 text-sm font-semibold text-amber-100/80"
+          >
+            Skip ⏭
+          </button>
+        </>
+      )}
+
+      {phase === 'tidy' && (
+        <>
+          <div className="absolute inset-x-0 top-0 h-[9vh] bg-black pointer-events-none" />
+          <div className="absolute inset-x-0 bottom-0 h-[9vh] bg-black pointer-events-none" />
+          <button
+            onClick={() => game?.skipTidy()}
             className="absolute right-4 bottom-[calc(9vh+12px)] btn-ghost rounded-full px-4 py-1.5 text-sm font-semibold text-amber-100/80"
           >
             Skip ⏭

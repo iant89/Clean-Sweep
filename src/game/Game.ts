@@ -3,11 +3,23 @@ import {
   CLEAR_THRESHOLD, COLS, DOCK, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey,
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
-import { buildGrid, buildWorld, makeBlobTexture, World } from './world';
+import { buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Particles } from './particles';
 import { Sfx } from './audio';
 
-export type Phase = 'menu' | 'intro' | 'playing' | 'paused' | 'shop' | 'gameover';
+export type Phase = 'menu' | 'intro' | 'playing' | 'paused' | 'shop' | 'gameover' | 'tidy';
+
+interface TidyScene {
+  room: number;
+  items: MessItem[];
+  idx: number;
+  t: number;
+  stage: 'travel' | 'anim' | 'hold' | 'return';
+  camPos: THREE.Vector3;
+  look: THREE.Vector3;
+  lifted: Set<MessPart>;
+  landed: Set<MessPart>;
+}
 export type ToastKind = 'info' | 'good' | 'warn' | 'bad' | 'big';
 
 export interface HudState {
@@ -102,6 +114,8 @@ export class Game {
   clears = 0;
   docked = false;
   dockLock = false;
+  /** Set once the drive input has been let go after docking, so the push that docked you can't undock you. */
+  undockArmed = false;
   dockHinted = false;
   fullHinted = false;
   dying = 0;
@@ -329,7 +343,7 @@ export class Game {
   // ------------------------------------------------------------ internals
   private setPhase(p: Phase) {
     this.phase = p;
-    const playCam = p === 'playing' || p === 'paused' || p === 'shop' || p === 'gameover';
+    const playCam = p === 'playing' || p === 'paused' || p === 'shop' || p === 'gameover' || p === 'tidy';
     this.world.cut.uCut.value = playCam ? 1 : 0;
     this.world.introGroup.visible = !playCam;
     const fog = this.world.scene.fog as THREE.Fog;
@@ -357,6 +371,10 @@ export class Game {
   }
 
   resetRun() {
+    for (const m of this.world.mess) this.world.setMessState(m, false);
+    this.tidyQueue = [];
+    this.tidyDelay = 0;
+    this.tidy = null;
     this.dirt.generate(Math.floor(Math.random() * 1e6));
     this.binBase = Math.max(70, Math.min(220, this.dirt.totalUnits() * 0.12));
     this.time = 0;
@@ -484,6 +502,11 @@ export class Game {
     }
     if (e.repeat) return;
     if (this.phase === 'intro') { this.skipIntro(); return; }
+    if (this.phase === 'tidy') {
+      // only deliberate keys skip, so holding a drive key through the cutscene doesn't
+      if (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') { e.preventDefault(); this.skipTidy(); }
+      return;
+    }
     switch (e.code) {
       case 'Escape':
       case 'KeyP':
@@ -527,8 +550,15 @@ export class Game {
       case 'menu': this.updateMenu(dt); break;
       case 'intro': this.updateIntro(dt); break;
       case 'playing': this.updatePlay(dt); break;
+      case 'tidy': this.updateTidy(dt); break;
       default: break;
     }
+    // animated furniture freezes while paused or shopping, like the rest of the game
+    if (this.phase !== 'paused' && this.phase !== 'shop') {
+      this.world.animate(now / 1000, 12 + (Math.min(this.time, NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
+    }
+    if (this.phase === 'playing') this.tickClocks(now / 1000);
+    this.updateAmbience(dt);
     if (this.phase !== 'paused' && this.phase !== 'shop') {
       const target = this.docked ? this.tmpV.set(DOCK.x, 0.4, DOCK.z + 1.0) : this.tmpV.set(this.px, 0.25, this.pz);
       this.dust.update(dt, target.x, target.y, target.z);
@@ -566,6 +596,203 @@ export class Game {
     this.world.cut.uRoomba.value.set(this.px, 0, this.pz);
     // flicker lights
     this.flicker();
+  }
+
+  // ---- tidy-up cutscene: out-of-place objects float back to where they belong
+  private tidyQueue: number[] = [];
+  private tidyDelay = 0;
+  private tidy: TidyScene | null = null;
+
+  private startTidy(room: number) {
+    const items = this.world.mess.filter((m) => m.room === room && !m.tidy);
+    if (!items.length) return;
+    this.vx = 0; this.vz = 0;
+    this.joy.active = false; this.joy.x = 0; this.joy.y = 0;
+    this.sfx.hum(0, 0);
+    this.tidy = {
+      room, items, idx: 0, t: 0, stage: 'travel',
+      camPos: this.camera.position.clone(),
+      look: new THREE.Vector3(this.camT.x, 0, this.camT.z - 0.6),
+      lifted: new Set(), landed: new Set(),
+    };
+    this.setPhase('tidy');
+    this.cb.onCaption(`Tidying up the ${ROOMS[room].name}…`);
+    this.sfx.tidyStart();
+  }
+
+  skipTidy() {
+    const td = this.tidy;
+    if (!td || this.phase !== 'tidy') return;
+    for (let k = td.idx; k < td.items.length; k++) {
+      const it = td.items[k];
+      this.world.setMessState(it, true);
+      for (const pt of it.parts) this.glow.burst(pt.to.p.x, pt.to.p.y + 0.2, pt.to.p.z, 6, 2, 1, 0.9, 0.5, 0.2, 0.6, 3);
+    }
+    this.sfx.tidyDone();
+    this.finishTidy();
+  }
+
+  private finishTidy() {
+    this.tidy = null;
+    this.cb.onCaption(null);
+    this.snapCamera();
+    this.setPhase('playing');
+    this.last = performance.now();
+    if (this.tidyQueue.length) this.tidyDelay = 0.8;
+  }
+
+  private updateTidy(dt: number) {
+    const td = this.tidy;
+    if (!td) return;
+    this.flicker();
+    td.t += dt;
+    // camera glides to each item in turn, then back to the roomba
+    const wantPos = new THREE.Vector3(), wantLook = new THREE.Vector3();
+    if (td.stage === 'return') {
+      wantLook.set(this.camT.x, 0, this.camT.z - 0.6);
+      wantPos.copy(this.gameCamPos(this.camT));
+    } else {
+      const it = td.items[td.idx];
+      const h = 6.2 + it.spread * 0.55;
+      wantLook.set(it.focus.x, 0.6, it.focus.z);
+      wantPos.set(it.focus.x, h, it.focus.z + h * 0.72);
+    }
+    const k = 1 - Math.exp(-3.2 * dt);
+    td.camPos.lerp(wantPos, k);
+    td.look.lerp(wantLook, k);
+    this.camera.position.copy(td.camPos);
+    this.camera.lookAt(td.look);
+    this.world.cut.uRoomba.value.set(td.look.x, 0, td.look.z);
+
+    switch (td.stage) {
+      case 'travel':
+        if (td.t >= (td.idx === 0 ? 1.0 : 0.8)) { td.stage = 'anim'; td.t = 0; }
+        break;
+      case 'anim': {
+        const it = td.items[td.idx];
+        const vol = 1 / Math.sqrt(it.parts.length);
+        for (const pt of it.parts) {
+          const u = Math.min(1, Math.max(0, (td.t - pt.delay) / PART_ANIM));
+          this.poseTidyPart(pt, u);
+          if (u > 0 && !td.lifted.has(pt)) { td.lifted.add(pt); this.sfx.tidyLift(vol); }
+          if (u > 0 && u < 1 && Math.random() < 0.7) {
+            const o = pt.obj.position;
+            this.glow.spawn(o.x + (Math.random() - 0.5) * 0.5, o.y + Math.random() * 0.4, o.z + (Math.random() - 0.5) * 0.5, 0, 0.5, 0, 1, 0.85, 0.45, 0.16 + Math.random() * 0.1, 0.7, -0.3);
+          }
+          if (u >= 1 && !td.landed.has(pt)) {
+            td.landed.add(pt);
+            this.sfx.tidyLand(vol);
+            this.glow.burst(pt.to.p.x, pt.to.p.y + 0.1, pt.to.p.z, 8, 2, 1, 0.9, 0.5, 0.2, 0.6, 3);
+          }
+        }
+        if (td.t >= it.duration) {
+          this.world.setMessState(it, true);
+          td.stage = 'hold'; td.t = 0;
+        }
+        break;
+      }
+      case 'hold':
+        if (td.t >= 0.45) {
+          td.idx++; td.t = 0;
+          if (td.idx < td.items.length) td.stage = 'travel';
+          else {
+            td.stage = 'return';
+            this.sfx.tidyDone();
+            this.cb.onCaption(`✨ ${ROOMS[td.room].name} tidied!`);
+          }
+        }
+        break;
+      case 'return':
+        if (td.t >= 1.1) this.finishTidy();
+        break;
+    }
+  }
+
+  /** u in [0,1]: lift off, arc over to the tidy spot while turning upright, then drop into place. */
+  private poseTidyPart(pt: MessPart, u: number) {
+    const o = pt.obj;
+    const LIFT = 0.28, MOVE = 0.82, H = 0.9, DROP = 0.45;
+    if (u <= 0 || u >= 1) {
+      const ps = u <= 0 ? pt.from : pt.to;
+      o.position.copy(ps.p); o.quaternion.copy(ps.q); o.scale.copy(ps.s);
+      return;
+    }
+    if (u < LIFT) {
+      const k = 1 - (1 - u / LIFT) ** 3;
+      o.position.copy(pt.from.p);
+      o.position.y += H * k;
+      o.quaternion.copy(pt.from.q);
+      o.rotateZ(Math.sin(u * 45) * 0.05 * k);
+      o.scale.copy(pt.from.s);
+    } else if (u < MOVE) {
+      const x = (u - LIFT) / (MOVE - LIFT);
+      const k = x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2;
+      const a = pt.from.p.clone(); a.y += H;
+      const b = pt.to.p.clone(); b.y += DROP;
+      o.position.lerpVectors(a, b, k);
+      o.position.y += Math.sin(k * Math.PI) * (0.5 + a.distanceTo(b) * 0.08);
+      o.quaternion.slerpQuaternions(pt.from.q, pt.to.q, k);
+      o.scale.lerpVectors(pt.from.s, pt.to.s, k);
+    } else {
+      const k = (u - MOVE) / (1 - MOVE);
+      o.position.copy(pt.to.p);
+      o.position.y += DROP * (1 - k * k);
+      o.quaternion.copy(pt.to.q);
+      o.scale.copy(pt.to.s);
+    }
+  }
+
+  // ---- grandfather clock sounds, positioned relative to the roomba
+  private tickSigns: boolean[] = [];
+
+  /** Left/right placement from the direction to the clock, never hard-panned. */
+  private clockPan(c: { x: number; z: number }) {
+    const d = Math.max(1, Math.hypot(c.x - this.px, c.z - this.pz));
+    return ((c.x - this.px) / d) * 0.6;
+  }
+
+  /** A tick each time a pendulum passes the centre of its swing, audible only nearby. */
+  private tickClocks(t: number) {
+    this.world.clocks.forEach((c, i) => {
+      const sign = Math.sin(t * Math.PI + c.phase) >= 0;
+      const prev = this.tickSigns[i];
+      this.tickSigns[i] = sign;
+      if (prev === undefined || prev === sign) return;
+      const d = Math.hypot(c.x - this.px, c.z - this.pz);
+      const near = Math.max(0, 1 - d / 13);
+      if (near <= 0) return;
+      this.sfx.tick(0.32 * near * near, this.clockPan(c), !sign);
+    });
+  }
+
+  /** Fireplace crackle and fountain water: looping beds plus random one-shots, louder up close. */
+  private updateAmbience(dt: number) {
+    const on = this.phase === 'playing' || this.phase === 'tidy';
+    for (const kind of ['fire', 'water'] as const) {
+      const range = kind === 'fire' ? 11 : 13;
+      let best = 0, pan = 0;
+      if (on) {
+        for (const s of this.world.soundSources) {
+          if (s.kind !== kind) continue;
+          const d = Math.hypot(s.x - this.px, s.z - this.pz);
+          const near = Math.max(0, 1 - d / range) ** 2;
+          if (near > best) { best = near; pan = ((s.x - this.px) / Math.max(1, d)) * 0.6; }
+        }
+      }
+      this.sfx.ambience(kind, best * (kind === 'fire' ? 0.2 : 0.17), pan);
+      if (best <= 0.01) continue;
+      if (kind === 'fire' && Math.random() < dt * 9) this.sfx.crackle(0.35 * best * (0.4 + Math.random() * 0.6), pan);
+      if (kind === 'water' && Math.random() < dt * 3.5) this.sfx.drip(0.18 * best * (0.4 + Math.random() * 0.6), pan);
+    }
+  }
+
+  /** Hourly chime from every clock: heard anywhere in the manor, louder the closer you are. */
+  private chimeClocks(hour: number) {
+    this.world.clocks.forEach((c, i) => {
+      const d = Math.hypot(c.x - this.px, c.z - this.pz);
+      const vol = 0.32 * (0.18 + 0.82 / (1 + (d / 7) ** 2));
+      this.sfx.chime(hour, vol, this.clockPan(c), i * 0.12);
+    });
   }
 
   private flicker() {
@@ -672,7 +899,9 @@ export class Game {
         x = (this.joy.x / jm) * mag; z = (this.joy.y / jm) * mag; m = mag;
       }
     }
-    return { x, z, m, turbo: this.keys.has('t') || this.turboTouch };
+    // whether any drive control is physically held (even if opposite keys cancel out)
+    const held = this.keys.has('l') || this.keys.has('r') || this.keys.has('u') || this.keys.has('d') || this.joy.active;
+    return { x, z, m, held, turbo: this.keys.has('t') || this.turboTouch };
   }
 
   private updatePlay(dt: number) {
@@ -702,6 +931,11 @@ export class Game {
       this.hourAnnounced = hour;
       const left = 5 - hour;
       this.cb.onToast(`🕐 ${hour}:00 AM — ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
+      this.chimeClocks(hour);
+    }
+    if (this.tidyQueue.length) {
+      this.tidyDelay -= dt;
+      if (this.tidyDelay <= 0) { this.startTidy(this.tidyQueue.shift()!); return; }
     }
 
     const inp = this.input();
@@ -709,16 +943,18 @@ export class Game {
     let removedUnits = 0;
 
     if (this.docked) {
-      if (inp.m > 0.3) {
+      // input held from driving in is ignored until it's released; then any fresh press undocks
+      if (!inp.held) this.undockArmed = true;
+      if (inp.m > 0.3 && this.undockArmed) {
         this.docked = false;
         this.dockLock = true;
         this.sfx.undock();
       } else {
-        // snap to dock
-        this.px += (DOCK.x - this.px) * Math.min(1, dt * 8);
-        this.pz += (DOCK.z - this.pz) * Math.min(1, dt * 8);
+        // magnetic pull onto the pad, spinning round to face away from the dock (north)
+        this.px += (DOCK.x - this.px) * Math.min(1, dt * 6);
+        this.pz += (DOCK.z - this.pz) * Math.min(1, dt * 6);
         this.vx = this.vz = 0;
-        this.yaw = lerpAngle(this.yaw, Math.PI, Math.min(1, dt * 8));
+        this.yaw = lerpAngle(this.yaw, Math.PI, Math.min(1, dt * 7));
         const bmax = this.batteryMax;
         const charging = this.battery < bmax - 0.01;
         const emptying = this.bin > 0.01;
@@ -800,8 +1036,17 @@ export class Game {
       // dock check
       const dd = Math.hypot(this.px - DOCK.x, this.pz - DOCK.z);
       if (this.dockLock && dd > 2.0) this.dockLock = false;
-      if (!this.dockLock && dd < 0.95 && (this.battery < this.batteryMax - 1 || this.bin > 0.5)) {
+      // touching the dock's ring captures the roomba whenever it is heading towards the dock
+      // (within 90 degrees); facing halfway away or more, it can pass by
+      const facingDock = dd < 0.05 || (Math.sin(this.yaw) * (DOCK.x - this.px) + Math.cos(this.yaw) * (DOCK.z - this.pz)) / dd > 0;
+      if (!this.dockLock && dd < DOCK_CAPTURE_R && facingDock) {
         this.docked = true;
+        this.undockArmed = false;
+        this.sfx.magnet();
+        for (let k = 0; k < 24; k++) {
+          const a = (k / 24) * Math.PI * 2;
+          this.glow.spawn(DOCK.x + Math.cos(a) * 1.15, 0.1, DOCK.z + Math.sin(a) * 1.15, -Math.cos(a) * 1.6, 0.8, -Math.sin(a) * 1.6, 0.3, 1, 0.6, 0.2, 0.5, 0);
+        }
         this.fullHinted = false;
         this.sfx.dock();
         this.addTrauma(0.1);
@@ -957,6 +1202,11 @@ export class Game {
       this.glow.spawn(x, 0.1 + Math.random() * 0.3, z, 0, 1.5 + Math.random() * 3, 0, gold ? 1 : 0.7, gold ? 0.85 : 1, gold ? 0.35 : 1, 0.25 + Math.random() * 0.25, 0.8 + Math.random() * 0.8, -0.5);
     }
     this.glow.burst(this.px, 0.5, this.pz, 30, 7, 1, 0.9, 0.4, 0.35, 0.9, 5);
+    // anything still out of place in this room gets tidied in a short cutscene, once the celebration has played
+    if (this.world.mess.some((m) => m.room === i && !m.tidy) && !this.tidyQueue.includes(i)) {
+      this.tidyQueue.push(i);
+      this.tidyDelay = Math.max(this.tidyDelay, 1.4);
+    }
     if (this.cleared.every(Boolean)) {
       this.score += 5000;
       this.coins += 100;
@@ -1295,6 +1545,9 @@ export class Game {
     g.stroke();
   }
 }
+
+/** Distance from the dock centre at which the ring grabs the roomba (ring's outer edge is 1.22). */
+const DOCK_CAPTURE_R = 1.3;
 
 function lerpAngle(a: number, b: number, t: number) {
   let d = b - a;
