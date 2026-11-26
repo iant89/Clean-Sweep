@@ -59,6 +59,40 @@ export function patchCutaway(mat: THREE.Material, cut: CutUniforms, darkBack = f
   mat.customProgramCacheKey = () => (darkBack ? 'cutD' : 'cut');
 }
 
+// Furniture: fragments sitting between the camera and the roomba (i.e. tall pieces hiding it) are
+// faded to see-through with an ordered dither, which needs no sorting and works on merged meshes.
+export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uRoomba = cut.uRoomba;
+    shader.uniforms.uCut = cut.uCut;
+    shader.vertexShader = 'varying vec3 vCutW;\n' + shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `#include <project_vertex>
+      vCutW = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
+    );
+    shader.fragmentShader = 'uniform vec3 uRoomba;\nuniform float uCut;\nvarying vec3 vCutW;\n' + shader.fragmentShader.replace(
+      '#include <clipping_planes_fragment>',
+      `#include <clipping_planes_fragment>
+      if (uCut > 0.5 && vCutW.y > 0.35) {
+        vec3 ray = vec3(uRoomba.x, 0.25, uRoomba.z) - cameraPosition;
+        float len = length(ray);
+        vec3 dir = ray / len;
+        vec3 rel = vCutW - cameraPosition;
+        float t = dot(rel, dir);
+        float perp = length(rel - dir * t);
+        float fade = (1.0 - smoothstep(1.1, 2.3, perp)) * (1.0 - smoothstep(len - 1.4, len - 0.6, t));
+        if (fade > 0.0) {
+          const float bayer[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
+          ivec2 bp = ivec2(mod(gl_FragCoord.xy, 4.0));
+          float thr = (bayer[bp.x + bp.y * 4] + 0.5) / 16.0;
+          if (1.0 - 0.6 * fade < thr) discard;
+        }
+      }`,
+    );
+  };
+  mat.customProgramCacheKey = () => 'fade';
+}
+
 // ---------------------------------------------------------------- static builder
 class SB {
   map = new Map<THREE.Material, THREE.BufferGeometry[]>();
@@ -472,11 +506,12 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
   const addBox = (cx: number, cz: number, w: number, d: number) => boxes.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 
   // Walls (and things hung on them) get the cutaway so they never hide the roomba; furniture uses
-  // an otherwise identical material set without it, so it stays visible when the roomba drives up to it.
+  // an otherwise identical material set that instead fades see-through only where it blocks the roomba.
   const makeMats = (cutaway: boolean) => {
   const L = (color: number, opts: THREE.MeshLambertMaterialParameters = {}, dark = false) => {
     const m = new THREE.MeshLambertMaterial({ color, ...opts });
     if (cutaway) patchCutaway(m, cut, dark);
+    else patchOccluderFade(m, cut);
     return m;
   };
   const M = {
@@ -618,7 +653,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   windowAt(2, 47, Math.PI / 2);
   windowAt(2, 37, Math.PI / 2);
 
-  // ---- furniture (no cutaway)
+  // ---- furniture (fades when blocking the roomba, never cut away)
   ({ M, portraits } = makeMats(false));
   const rng = makeRng(42);
   const legsCollide = (x: number, z: number, a: number, pts: [number, number][], s = 0.3) => {
