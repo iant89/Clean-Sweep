@@ -109,6 +109,8 @@ export class Sfx {
     [392, 523, 784, 1047].forEach((f, i) => this.tone(f, 0.25, 'sine', 0.25, 0, i * 0.12));
     this.tone(1568, 0.5, 'triangle', 0.15, 0, 0.5);
   }
+  /** Magnetic grab as the dock ring captures the roomba. */
+  magnet() { this.tone(180, 0.25, 'sawtooth', 0.08, 520); this.tone(90, 0.2, 'sine', 0.2, 60); }
   dock() { this.tone(660, 0.12, 'sine', 0.25); this.tone(990, 0.25, 'sine', 0.25, 0, 0.1); }
   undock() { this.tone(880, 0.1, 'sine', 0.18); this.tone(660, 0.15, 'sine', 0.15, 0, 0.08); }
   low() { this.tone(880, 0.12, 'square', 0.12); this.tone(880, 0.12, 'square', 0.12, 0, 0.2); }

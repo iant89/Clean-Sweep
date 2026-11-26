@@ -899,7 +899,9 @@ export class Game {
         x = (this.joy.x / jm) * mag; z = (this.joy.y / jm) * mag; m = mag;
       }
     }
-    return { x, z, m, turbo: this.keys.has('t') || this.turboTouch };
+    // whether any drive control is physically held (even if opposite keys cancel out)
+    const held = this.keys.has('l') || this.keys.has('r') || this.keys.has('u') || this.keys.has('d') || this.joy.active;
+    return { x, z, m, held, turbo: this.keys.has('t') || this.turboTouch };
   }
 
   private updatePlay(dt: number) {
@@ -941,18 +943,18 @@ export class Game {
     let removedUnits = 0;
 
     if (this.docked) {
-      if (inp.m < 0.2) this.undockArmed = true;
-      // undock on a fresh press, or straight away when steering clearly away from the dock (north)
-      if (inp.m > 0.3 && (this.undockArmed || inp.z < -0.5)) {
+      // input held from driving in is ignored until it's released; then any fresh press undocks
+      if (!inp.held) this.undockArmed = true;
+      if (inp.m > 0.3 && this.undockArmed) {
         this.docked = false;
         this.dockLock = true;
         this.sfx.undock();
       } else {
-        // snap to dock
-        this.px += (DOCK.x - this.px) * Math.min(1, dt * 8);
-        this.pz += (DOCK.z - this.pz) * Math.min(1, dt * 8);
+        // magnetic pull onto the pad, spinning round to face away from the dock (north)
+        this.px += (DOCK.x - this.px) * Math.min(1, dt * 6);
+        this.pz += (DOCK.z - this.pz) * Math.min(1, dt * 6);
         this.vx = this.vz = 0;
-        this.yaw = lerpAngle(this.yaw, Math.PI, Math.min(1, dt * 8));
+        this.yaw = lerpAngle(this.yaw, Math.PI, Math.min(1, dt * 7));
         const bmax = this.batteryMax;
         const charging = this.battery < bmax - 0.01;
         const emptying = this.bin > 0.01;
@@ -1034,9 +1036,15 @@ export class Game {
       // dock check
       const dd = Math.hypot(this.px - DOCK.x, this.pz - DOCK.z);
       if (this.dockLock && dd > 2.0) this.dockLock = false;
-      if (!this.dockLock && dd < 0.95 && (this.battery < this.batteryMax - 1 || this.bin > 0.5)) {
+      // touching the dock's ring captures the roomba (only when it needs charging or emptying)
+      if (!this.dockLock && dd < DOCK_CAPTURE_R && (this.battery < this.batteryMax - 1 || this.bin > 0.5)) {
         this.docked = true;
         this.undockArmed = false;
+        this.sfx.magnet();
+        for (let k = 0; k < 24; k++) {
+          const a = (k / 24) * Math.PI * 2;
+          this.glow.spawn(DOCK.x + Math.cos(a) * 1.15, 0.1, DOCK.z + Math.sin(a) * 1.15, -Math.cos(a) * 1.6, 0.8, -Math.sin(a) * 1.6, 0.3, 1, 0.6, 0.2, 0.5, 0);
+        }
         this.fullHinted = false;
         this.sfx.dock();
         this.addTrauma(0.1);
@@ -1535,6 +1543,9 @@ export class Game {
     g.stroke();
   }
 }
+
+/** Distance from the dock centre at which the ring grabs the roomba (ring's outer edge is 1.22). */
+const DOCK_CAPTURE_R = 1.3;
 
 function lerpAngle(a: number, b: number, t: number) {
   let d = b - a;
