@@ -566,6 +566,8 @@ export interface World {
   hemi: THREE.HemisphereLight;
   /** Grandfather clocks: position and pendulum phase (pendulum angle ~ sin(t*PI + phase)). */
   clocks: { x: number; z: number; phase: number }[];
+  /** Positions of looping ambient sound sources (fireplace crackle, fountain water). */
+  soundSources: { kind: 'fire' | 'water'; x: number; z: number }[];
   /** Drive animated furniture. t: seconds; hours: in-game clock time in hours (12 = midnight). */
   animate(t: number, hours: number): void;
 }
@@ -731,6 +733,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   // Moving parts are real meshes (not merged into the statics) and are driven by animate().
   const animators: ((t: number, hours: number) => void)[] = [];
   const clocks: World['clocks'] = [];
+  const soundSources: World['soundSources'] = [];
   const animRoot = new THREE.Group();
   scene.add(animRoot);
   const anchor = (x: number, z: number, ry: number) => {
@@ -1001,6 +1004,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
             g.add(m);
             flames.push({ m, k, base: inner ? 0.45 : 0.65 });
           }
+          soundSources.push({ kind: 'fire', x: f.x, z: f.z });
           const ember = M.ember as THREE.MeshLambertMaterial;
           animators.push((t) => {
             for (const fl of flames) {
@@ -1054,6 +1058,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.reset();
         addBox(f.x, f.z, 3.4, 3.4);
         {
+          soundSources.push({ kind: 'water', x: f.x, z: f.z });
           const g = anchor(f.x, f.z, 0);
           // ripples spreading out from the column on the lower basin, and gently in the top bowl
           const rings: { m: THREE.Mesh; mat: THREE.MeshBasicMaterial; r0: number; r1: number; off: number; peak: number }[] = [];
@@ -1177,5 +1182,5 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
 
   const animate = (t: number, hours: number) => { for (const fn of animators) fn(t, hours); };
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, animate };
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, soundSources, animate };
 }

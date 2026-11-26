@@ -138,6 +138,83 @@ export class Sfx {
     return g;
   }
 
+  // ---- ambient loops (fireplace, fountain): built lazily, level/pan driven every frame
+  private loops: Partial<Record<'fire' | 'water', { gain: GainNode; pan: StereoPannerNode | null; vol: number; p: number }>> = {};
+
+  private noiseSrc() {
+    const s = this.ctx!.createBufferSource();
+    s.buffer = this.noiseBuf;
+    s.loop = true;
+    s.start(0, Math.random() * 1.5);
+    return s;
+  }
+
+  private filt(type: BiquadFilterType, freq: number, q = 0.7) {
+    const f = this.ctx!.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = freq;
+    f.Q.value = q;
+    return f;
+  }
+
+  private makeLoop(kind: 'fire' | 'water') {
+    const ctx = this.ctx!;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    const pan = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (pan) gain.connect(pan).connect(this.master!); else gain.connect(this.master!);
+    const layer = (node: AudioNode, vol: number) => { const g = ctx.createGain(); g.gain.value = vol; node.connect(g).connect(gain); return g; };
+    if (kind === 'fire') {
+      // low roar + faint hiss
+      layer(this.noiseSrc().connect(this.filt('lowpass', 380)), 0.9);
+      layer(this.noiseSrc().connect(this.filt('bandpass', 2600, 0.6)), 0.08);
+    } else {
+      // bubbling wash: a band of noise whose centre wobbles, plus a soft high splash
+      const bp = this.filt('bandpass', 900, 0.9);
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 3.3;
+      const depth = ctx.createGain();
+      depth.gain.value = 260;
+      lfo.connect(depth).connect(bp.frequency);
+      lfo.start();
+      layer(this.noiseSrc().connect(bp), 0.7);
+      layer(this.noiseSrc().connect(this.filt('highpass', 3500)), 0.12);
+    }
+    return (this.loops[kind] = { gain, pan, vol: 0, p: 0 });
+  }
+
+  /** Set an ambient loop's level (distance falloff already applied) and pan. */
+  ambience(kind: 'fire' | 'water', vol: number, pan: number) {
+    if (!this.ctx || !this.master || !this.noiseBuf) return;
+    const l = this.loops[kind] ?? (vol > 0.001 ? this.makeLoop(kind) : null);
+    if (!l) return;
+    if (Math.abs(l.vol - vol) < 0.003 && Math.abs(l.p - pan) < 0.02) return;
+    l.vol = vol; l.p = pan;
+    const t = this.ctx.currentTime;
+    l.gain.gain.setTargetAtTime(vol, t, 0.12);
+    l.pan?.pan.setTargetAtTime(Math.max(-1, Math.min(1, pan)), t, 0.12);
+  }
+
+  /** A single fire crackle or pop. */
+  crackle(vol: number, pan: number) {
+    const d = this.bus(vol, pan);
+    if (!d) return;
+    if (Math.random() < 0.25) {
+      this.noise(0.06 + Math.random() * 0.05, 500 + Math.random() * 500, 0.9, 0, 'bandpass', d); // pop
+    } else {
+      const n = 1 + Math.floor(Math.random() * 3);
+      for (let k = 0; k < n; k++) this.noise(0.008 + Math.random() * 0.02, 1800 + Math.random() * 3500, 0.7, k * (0.015 + Math.random() * 0.03), 'highpass', d);
+    }
+  }
+
+  /** A water droplet plink. */
+  drip(vol: number, pan: number) {
+    const d = this.bus(vol, pan);
+    if (!d) return;
+    const f = 700 + Math.random() * 900;
+    this.tone(f, 0.07 + Math.random() * 0.05, 'sine', 0.5, f * (0.6 + Math.random() * 0.6), 0, d);
+  }
+
   /** Grandfather-clock tick (tock = the lower, alternate beat). */
   tick(vol: number, pan: number, tock: boolean) {
     const d = this.bus(vol, pan);

@@ -534,6 +534,7 @@ export class Game {
       this.world.animate(now / 1000, 12 + (Math.min(this.time, NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
     }
     if (this.phase === 'playing') this.tickClocks(now / 1000);
+    this.updateAmbience(dt);
     if (this.phase !== 'paused' && this.phase !== 'shop') {
       const target = this.docked ? this.tmpV.set(DOCK.x, 0.4, DOCK.z + 1.0) : this.tmpV.set(this.px, 0.25, this.pz);
       this.dust.update(dt, target.x, target.y, target.z);
@@ -594,6 +595,27 @@ export class Game {
       if (near <= 0) return;
       this.sfx.tick(0.32 * near * near, this.clockPan(c), !sign);
     });
+  }
+
+  /** Fireplace crackle and fountain water: looping beds plus random one-shots, louder up close. */
+  private updateAmbience(dt: number) {
+    const on = this.phase === 'playing';
+    for (const kind of ['fire', 'water'] as const) {
+      const range = kind === 'fire' ? 11 : 13;
+      let best = 0, pan = 0;
+      if (on) {
+        for (const s of this.world.soundSources) {
+          if (s.kind !== kind) continue;
+          const d = Math.hypot(s.x - this.px, s.z - this.pz);
+          const near = Math.max(0, 1 - d / range) ** 2;
+          if (near > best) { best = near; pan = ((s.x - this.px) / Math.max(1, d)) * 0.6; }
+        }
+      }
+      this.sfx.ambience(kind, best * (kind === 'fire' ? 0.2 : 0.17), pan);
+      if (best <= 0.01) continue;
+      if (kind === 'fire' && Math.random() < dt * 9) this.sfx.crackle(0.35 * best * (0.4 + Math.random() * 0.6), pan);
+      if (kind === 'water' && Math.random() < dt * 3.5) this.sfx.drip(0.18 * best * (0.4 + Math.random() * 0.6), pan);
+    }
   }
 
   /** Hourly chime from every clock: heard anywhere in the manor, louder the closer you are. */
