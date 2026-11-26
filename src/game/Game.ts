@@ -529,6 +529,10 @@ export class Game {
       case 'playing': this.updatePlay(dt); break;
       default: break;
     }
+    // animated furniture freezes while paused or shopping, like the rest of the game
+    if (this.phase !== 'paused' && this.phase !== 'shop') {
+      this.world.animate(now / 1000, 12 + (Math.min(this.time, NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
+    }
     if (this.phase !== 'paused' && this.phase !== 'shop') {
       const target = this.docked ? this.tmpV.set(DOCK.x, 0.4, DOCK.z + 1.0) : this.tmpV.set(this.px, 0.25, this.pz);
       this.dust.update(dt, target.x, target.y, target.z);

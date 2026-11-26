@@ -242,6 +242,27 @@ function blobTexture(inner: string, outer: string) {
   const t = new THREE.CanvasTexture(c);
   return t;
 }
+
+function globeTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 64;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#2a6a8a';
+  g.fillRect(0, 0, 128, 64);
+  const rng = makeRng(7);
+  g.fillStyle = '#5f8a4a';
+  for (let k = 0; k < 9; k++) {
+    const cx = rng() * 128, cy = 12 + rng() * 40;
+    for (let j = 0; j < 6; j++) {
+      g.beginPath();
+      g.ellipse(cx + (rng() - 0.5) * 18, cy + (rng() - 0.5) * 12, 4 + rng() * 8, 3 + rng() * 6, rng() * 3, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 export const makeBlobTexture = blobTexture;
 
 function floorTexture(grid: Int8Array) {
@@ -543,6 +564,8 @@ export interface World {
   lights: { light: THREE.PointLight; base: number }[];
   ambient: THREE.AmbientLight;
   hemi: THREE.HemisphereLight;
+  /** Drive animated furniture. t: seconds; hours: in-game clock time in hours (12 = midnight). */
+  animate(t: number, hours: number): void;
 }
 
 export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
@@ -703,6 +726,28 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   windowAt(2, 37, Math.PI / 2);
 
   // ---- furniture (fades when blocking the roomba, never cut away)
+  // Moving parts are real meshes (not merged into the statics) and are driven by animate().
+  const animators: ((t: number, hours: number) => void)[] = [];
+  const animRoot = new THREE.Group();
+  scene.add(animRoot);
+  const anchor = (x: number, z: number, ry: number) => {
+    const g = new THREE.Group();
+    g.position.set(x, 0, z);
+    g.rotation.y = ry;
+    animRoot.add(g);
+    return g;
+  };
+  const part = (geo: THREE.BufferGeometry, mat: THREE.Material, x = 0, y = 0, z = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    return m;
+  };
+  const globeMat = new THREE.MeshLambertMaterial({ map: globeTexture() });
+  patchOccluderFade(globeMat, cut);
+  const flameMats = [0xff7a1a, 0xffc040].map((color) => new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  const rippleMat = () => new THREE.MeshBasicMaterial({ color: 0xcfefff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
   ({ M, portraits } = makeMats(false));
   const rng = makeRng(42);
   const legsCollide = (x: number, z: number, a: number, pts: [number, number][], s = 0.3) => {
@@ -901,9 +946,35 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.box(M.woodMed, 0, 3.9, 0, 1.35, 0.25, 0.9);
         sb.place(new THREE.CylinderGeometry(0.4, 0.4, 0.05, 20), M.gold, 0, 3.2, 0.42, Math.PI / 2);
         sb.box(M.black, 0, 0.8, 0.39, 0.6, 1.7, 0.04);
-        sb.cyl(M.gold, 0, 1.0, 0.43, 0.15, 0.15, 0.03, 12, Math.PI / 2);
         sb.reset();
         fullBox(f, 1.2, 0.8);
+        {
+          const g = anchor(f.x, f.z, a);
+          // hands, pivoting at the dial centre and following the in-game night clock
+          const hub = new THREE.Group();
+          hub.position.set(0, 3.2, 0.455);
+          const hourHand = new THREE.Group();
+          hourHand.add(part(new THREE.BoxGeometry(0.06, 0.22, 0.015), M.black, 0, 0.09, 0));
+          const minHand = new THREE.Group();
+          minHand.add(part(new THREE.BoxGeometry(0.035, 0.33, 0.015), M.black, 0, 0.14, 0.015));
+          hub.add(hourHand, minHand, part(new THREE.CylinderGeometry(0.035, 0.035, 0.05, 10), M.gold, 0, 0, 0.01));
+          hub.children[2].rotation.x = Math.PI / 2;
+          // pendulum swinging behind the glass, one tick per second
+          const pend = new THREE.Group();
+          pend.position.set(0, 2.4, 0.43);
+          pend.add(part(new THREE.BoxGeometry(0.03, 1.25, 0.02), M.gold, 0, -0.625, 0));
+          const bob = part(new THREE.CylinderGeometry(0.15, 0.15, 0.03, 16), M.gold, 0, -1.4, 0);
+          bob.rotation.x = Math.PI / 2;
+          pend.add(bob);
+          g.add(hub, pend);
+          const phase = (f.x * 7.3 + f.z * 3.1) % 6;
+          animators.push((t, hours) => {
+            const h = hours % 12;
+            hourHand.rotation.z = -(h / 12) * Math.PI * 2;
+            minHand.rotation.z = -(h % 1) * Math.PI * 2;
+            pend.rotation.z = 0.2 * Math.sin(t * Math.PI + phase);
+          });
+        }
         break;
       }
       case 'fireplace': {
@@ -914,6 +985,28 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.box(M.woodMed, 0, 3, 0.1, w + 0.4, 0.2, d + 0.2);
         sb.reset();
         fullBox(f, w, d);
+        {
+          const g = anchor(f.x, f.z, a);
+          const flames: { m: THREE.Mesh; k: number; base: number }[] = [];
+          const n = 5;
+          for (let k = 0; k < n; k++) {
+            const inner = k % 2 === 1;
+            const geo = new THREE.ConeGeometry(inner ? 0.12 : 0.18, 1, 8);
+            geo.translate(0, 0.5, 0); // scale from the base
+            const m = part(geo, flameMats[inner ? 1 : 0], (k / (n - 1) - 0.5) * w * 0.3, 0.3, d / 2 - 0.2 + (inner ? 0.06 : 0));
+            g.add(m);
+            flames.push({ m, k, base: inner ? 0.45 : 0.65 });
+          }
+          const ember = M.ember as THREE.MeshLambertMaterial;
+          animators.push((t) => {
+            for (const fl of flames) {
+              const n1 = Math.sin(t * 9 + fl.k * 1.7) * 0.5 + Math.sin(t * 15.3 + fl.k * 4.1) * 0.3;
+              fl.m.scale.set(1 + n1 * 0.15, fl.base * (1 + n1 * 0.35), 1 + n1 * 0.15);
+              fl.m.rotation.z = Math.sin(t * 5 + fl.k) * 0.08;
+            }
+            ember.emissiveIntensity = 0.75 + 0.25 * Math.sin(t * 6.3) * Math.sin(t * 2.9);
+          });
+        }
         break;
       }
       case 'desk': {
@@ -932,9 +1025,19 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.frame(f.x, f.z, 0);
         sb.cyl(M.woodDark, 0, 0, 0, 0.3, 0.4, 0.15);
         sb.cyl(M.woodDark, 0, 0.15, 0, 0.06, 0.06, 1.0);
-        sb.sph(M.globe, 0, 1.5, 0, 0.45, 14);
         sb.reset();
         addBox(f.x, f.z, 0.85, 0.85);
+        {
+          const g = anchor(f.x, f.z, 0);
+          const tilt = new THREE.Group();
+          tilt.position.y = 1.5;
+          tilt.rotation.z = 0.41; // axial tilt
+          const sphere = part(new THREE.SphereGeometry(0.45, 20, 14), globeMat);
+          tilt.add(sphere, part(new THREE.TorusGeometry(0.52, 0.025, 6, 28), M.gold));
+          g.add(tilt);
+          const spin = 0.35 + ((f.x + f.z) % 1) * 0.2;
+          animators.push((t) => { sphere.rotation.y = t * spin; });
+        }
         break;
       }
       case 'fountain': {
@@ -946,6 +1049,28 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.cyl(M.water, 0, 2.2, 0, 0.6, 0.6, 0.02, 16);
         sb.reset();
         addBox(f.x, f.z, 3.4, 3.4);
+        {
+          const g = anchor(f.x, f.z, 0);
+          // ripples spreading out from the column on the lower basin, and gently in the top bowl
+          const rings: { m: THREE.Mesh; mat: THREE.MeshBasicMaterial; r0: number; r1: number; off: number; peak: number }[] = [];
+          const ring = (y: number, r0: number, r1: number, off: number, peak: number) => {
+            const mat = rippleMat();
+            const m = part(new THREE.RingGeometry(0.92, 1, 40), mat, 0, y, 0);
+            m.rotation.x = -Math.PI / 2;
+            g.add(m);
+            rings.push({ m, mat, r0, r1, off, peak });
+          };
+          for (let k = 0; k < 3; k++) ring(0.74, 0.35, 1.45, k / 3, 0.45);
+          for (let k = 0; k < 2; k++) ring(2.225, 0.1, 0.55, k / 2, 0.35);
+          animators.push((t) => {
+            for (const r of rings) {
+              const p = (t / 2.6 + r.off) % 1;
+              const s = r.r0 + (r.r1 - r.r0) * p;
+              r.m.scale.set(s, s, 1);
+              r.mat.opacity = r.peak * Math.sin(p * Math.PI);
+            }
+          });
+        }
         break;
       }
       case 'books': {
@@ -1046,5 +1171,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   pl(20, 3.6, 12, 35, 22);
   pl(72, 3.6, 33, 35, 22);
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi };
+  const animate = (t: number, hours: number) => { for (const fn of animators) fn(t, hours); };
+
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, animate };
 }
