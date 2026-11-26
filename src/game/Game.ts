@@ -69,6 +69,10 @@ export interface GameCallbacks {
 
 interface Coin { x: number; z: number; active: boolean; phase: number }
 interface Popup { el: HTMLDivElement; x: number; y: number; z: number; age: number; life: number }
+export type DevCheat =
+  | 'coins100' | 'coins1000' | 'battery' | 'infBattery' | 'emptyBin' | 'maxUpgrades'
+  | 'cleanRoom' | 'cleanAll' | 'ghost' | 'hour' | 'dawn' | 'freezeTime' | 'dock';
+
 interface Ghost { room: number; steps: { x: number; z: number; a: number; left: boolean; s: number }[]; idx: number; timer: number; x: number; z: number; fade: number }
 
 const KEYMAP: Record<string, 'u' | 'd' | 'l' | 'r' | 't'> = {
@@ -136,6 +140,9 @@ export class Game {
   curRoom = -1;
   turbo = false;
   homeHint = false;
+  // developer cheats (only reachable through the ?devmode=true menu)
+  devInfBattery = false;
+  devFreezeTime = false;
 
   // roomba physics
   px = DOCK.x;
@@ -347,6 +354,47 @@ export class Game {
     }
     this.pushHud();
     return true;
+  }
+
+  // ------------------------------------------------------------ developer cheats
+  /** Run a cheat from the dev menu. Returns a short description for feedback, or null if it can't run now. */
+  devCheat(cmd: DevCheat): string | null {
+    if (!this.canSave) return null;
+    switch (cmd) {
+      case 'coins100': this.coins += 100; break;
+      case 'coins1000': this.coins += 1000; break;
+      case 'battery':
+        this.battery = this.batteryMax;
+        this.warned30 = this.warned12 = false;
+        break;
+      case 'infBattery': this.devInfBattery = !this.devInfBattery; break;
+      case 'emptyBin': this.bin = 0; this.binWarned = false; this.fullHinted = false; break;
+      case 'maxUpgrades': {
+        const oldMax = this.batteryMax;
+        for (const u of UPGRADES) this.up[u.key] = u.costs.length;
+        this.battery += this.batteryMax - oldMax;
+        break;
+      }
+      case 'cleanRoom': {
+        const r = this.curRoom >= 0 ? this.curRoom : 0;
+        if (this.cleared[r]) return 'Room already spotless';
+        this.clearRoom(r);
+        break;
+      }
+      case 'cleanAll':
+        for (let i = 0; i < ROOMS.length; i++) if (!this.cleared[i]) this.clearRoom(i);
+        break;
+      case 'ghost': if (!this.ghost) this.nextGhost = 0; break;
+      case 'hour': this.time = Math.min(NIGHT_LENGTH - 1, this.time + NIGHT_LENGTH / 5); break;
+      case 'dawn': this.time = Math.max(this.time, NIGHT_LENGTH - 5); break;
+      case 'freezeTime': this.devFreezeTime = !this.devFreezeTime; break;
+      case 'dock':
+        this.px = DOCK.x; this.pz = DOCK.z; this.vx = this.vz = 0;
+        if (this.phase === 'playing') this.snapCamera();
+        break;
+    }
+    this.pushHud();
+    return cmd;
   }
 
   // ------------------------------------------------------------ save / load
@@ -1078,7 +1126,7 @@ export class Game {
       return;
     }
 
-    this.time += dt;
+    if (!this.devFreezeTime) this.time += dt;
     if (this.time >= NIGHT_LENGTH) { this.startEnding('dawn'); return; }
     this.autosaveT += dt;
     if (this.autosaveT >= AUTOSAVE_EVERY) this.autosave();
@@ -1168,7 +1216,7 @@ export class Game {
       // battery
       const frac = Math.min(1, sp / this.speedMax);
       const drain = 0.5 + frac * (this.turbo ? 2.6 : 1.0);
-      this.battery -= drain * dt;
+      if (!this.devInfBattery) this.battery -= drain * dt;
       if (this.battery <= 0) { this.battery = 0; this.startEnding('battery'); return; }
 
       // cleaning

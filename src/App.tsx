@@ -4,6 +4,7 @@ import HUD from './components/HUD';
 import TouchControls from './components/TouchControls';
 import { GameOver, PauseMenu, Shop, StartScreen } from './components/Screens';
 import { SaveMenu } from './components/SaveMenu';
+import DevMenu, { DEV_MODE } from './components/DevMenu';
 import { getAutosave, listSaves, loadSave } from './game/saves';
 
 interface Toast { id: number; text: string; kind: ToastKind }
@@ -137,6 +138,8 @@ export default function App() {
           isTouch={isTouch}
         />
       )}
+
+      {DEV_MODE && inPlay && game && <DevMenu game={game} />}
 
       {/* flash */}
       {flash > 0 && <div key={flash} className="absolute inset-0 pointer-events-none flash" style={{ background: 'radial-gradient(circle, rgba(255,240,190,0.9), rgba(255,210,120,0.3))' }} />}
