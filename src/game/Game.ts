@@ -114,6 +114,8 @@ export class Game {
   clears = 0;
   docked = false;
   dockLock = false;
+  /** Set once the drive input has been let go after docking, so the push that docked you can't undock you. */
+  undockArmed = false;
   dockHinted = false;
   fullHinted = false;
   dying = 0;
@@ -939,7 +941,9 @@ export class Game {
     let removedUnits = 0;
 
     if (this.docked) {
-      if (inp.m > 0.3) {
+      if (inp.m < 0.2) this.undockArmed = true;
+      // undock on a fresh press, or straight away when steering clearly away from the dock (north)
+      if (inp.m > 0.3 && (this.undockArmed || inp.z < -0.5)) {
         this.docked = false;
         this.dockLock = true;
         this.sfx.undock();
@@ -1032,6 +1036,7 @@ export class Game {
       if (this.dockLock && dd > 2.0) this.dockLock = false;
       if (!this.dockLock && dd < 0.95 && (this.battery < this.batteryMax - 1 || this.bin > 0.5)) {
         this.docked = true;
+        this.undockArmed = false;
         this.fullHinted = false;
         this.sfx.dock();
         this.addTrauma(0.1);
