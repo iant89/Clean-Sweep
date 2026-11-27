@@ -58,9 +58,14 @@ export interface GameOverInfo {
   bonus: number;
   /** Coins in hand when the run ended. */
   coins: number;
+  /** Nights fully survived (dawns reached) this run. */
+  nights: number;
   /** Coins it costs to recharge and keep playing after the battery dies, or 0 if you can't afford it. */
   reviveCost: number;
 }
+
+const AMBIENT_NIGHT = new THREE.Color(0xb8b0d8);
+const AMBIENT_DAWN = new THREE.Color(0xffc88a);
 
 /** Minimum coins to revive after a dead battery; with 500+ coins it costs half of them instead. */
 export const REVIVE_MIN = 250;
@@ -151,6 +156,8 @@ export class Game {
   ghost: Ghost | null = null;
   nextGhost = 40;
   hourAnnounced = 0;
+  /** Seconds left on the warm sunrise glow after a dawn. */
+  dawnGlow = 0;
   curRoom = -1;
   /** Rooms the roomba has driven into this run; the rest stay blurred on the minimap. */
   explored: boolean[] = ROOMS.map(() => false);
@@ -418,8 +425,8 @@ export class Game {
         break;
       }
       case 'ghost': if (!this.ghost) this.nextGhost = 0; break;
-      case 'hour': this.time = Math.min(NIGHT_LENGTH - 1, this.time + NIGHT_LENGTH / 5); break;
-      case 'dawn': this.time = Math.max(this.time, NIGHT_LENGTH - 5); break;
+      case 'hour': this.time += NIGHT_LENGTH / 5; break;
+      case 'dawn': this.time = Math.max(this.time, (this.night + 1) * NIGHT_LENGTH - 5); break;
       case 'freezeTime': this.devFreezeTime = !this.devFreezeTime; break;
       case 'dock':
         this.px = DOCK.x; this.pz = DOCK.z; this.vx = this.vz = 0;
@@ -604,7 +611,7 @@ export class Game {
       this.cb.onToast(this.isTouch ? 'Drag anywhere to drive · Hold ⚡ for turbo' : 'WASD / Arrows to drive · Shift = Turbo', 'info');
     }, fromIntro ? 300 : 100);
     setTimeout(() => {
-      if (this.phase === 'playing') this.cb.onToast('Clean rooms to 100% for coins — survive till dawn!', 'good');
+      if (this.phase === 'playing') this.cb.onToast('Clean rooms to 100% for coins — every dawn pays a bonus!', 'good');
     }, 3200);
   }
 
@@ -644,6 +651,7 @@ export class Game {
     this.ghostSprite.visible = false;
     this.nextGhost = 38;
     this.hourAnnounced = 0;
+    this.dawnGlow = 0;
     this.curRoom = -1;
     this.explored = ROOMS.map(() => false);
     this.px = DOCK.x; this.pz = DOCK.z; this.vx = 0; this.vz = 0; this.yaw = Math.PI;
@@ -901,7 +909,7 @@ export class Game {
     }
     // animated furniture freezes while paused or shopping, like the rest of the game
     if (this.phase !== 'paused' && this.phase !== 'shop') {
-      this.world.animate(now / 1000, 12 + (Math.min(this.time, NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
+      this.world.animate(now / 1000, 12 + ((this.time % NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
     }
     if (this.phase === 'playing') this.tickClocks(now / 1000);
     this.updateAmbience(dt);
@@ -1195,7 +1203,7 @@ export class Game {
       if (t >= time && this.introStage < stage) { this.introStage = stage; this.cb.onCaption(text, big); }
     };
     capAt(0.2, 1, 'Blackwood Manor — 11:59 PM');
-    capAt(3.0, 2, 'The owners are away for the night...');
+    capAt(3.0, 2, 'The owners left at midnight, swearing they\'d be back by dawn...');
     capAt(5.3, 3, '...and someone tracked mud EVERYWHERE.');
     capAt(7.6, 4, null);
     capAt(8.0, 5, '*whirrr... beep?*');
@@ -1300,15 +1308,25 @@ export class Game {
     }
 
     if (!this.devFreezeTime) this.time += dt;
-    if (this.time >= NIGHT_LENGTH) { this.startEnding('dawn'); return; }
     this.autosaveT += dt;
     if (this.autosaveT >= AUTOSAVE_EVERY) this.autosave();
-    const hour = Math.floor(this.time / (NIGHT_LENGTH / 5));
-    if (hour > this.hourAnnounced) {
-      this.hourAnnounced = hour;
-      const left = 5 - hour;
-      this.cb.onToast(`🕐 ${hour}:00 AM — ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
-      this.chimeClocks(hour);
+    // hours are counted across nights: every 5th one is a dawn, after which the curse rewinds the clock
+    const hourIdx = Math.floor(this.time / (NIGHT_LENGTH / 5));
+    if (hourIdx > this.hourAnnounced) {
+      this.hourAnnounced = hourIdx;
+      const hour = hourIdx % 5;
+      if (hour === 0) this.dawnBreaks();
+      else {
+        const left = 5 - hour;
+        this.cb.onToast(`🕐 ${hour}:00 AM — ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
+        this.chimeClocks(hour);
+      }
+    }
+    if (this.dawnGlow > 0) {
+      this.dawnGlow = Math.max(0, this.dawnGlow - dt);
+      const k = Math.sin(Math.min(1, this.dawnGlow / 5) * Math.PI);
+      this.world.ambient.intensity = 0.75 + 1.1 * k;
+      this.world.ambient.color.copy(AMBIENT_NIGHT).lerp(AMBIENT_DAWN, k);
     }
     if (this.tidyQueue.length) {
       this.tidyDelay -= dt;
@@ -1615,12 +1633,8 @@ export class Game {
   }
 
   private finish() {
-    let bonus = 0;
+    const bonus = 0;
     const overall = this.dirt.overall();
-    if (this.ending === 'dawn') {
-      bonus = 2000 + Math.round((this.battery / this.batteryMax) * 1000) + Math.round(overall * 3000);
-      this.score += bonus;
-    }
     this.cb.onCaption(null);
     this.pushHud();
     this.setPhase('gameover');
@@ -1634,8 +1648,53 @@ export class Game {
       coinsEarned: this.coinsEarned,
       bonus,
       coins: this.coins,
+      nights: this.night,
       reviveCost: this.ending === 'battery' ? reviveCost(this.coins) : 0,
     });
+  }
+
+  /** Nights survived so far (0 during the first night). */
+  get night() { return Math.floor(this.time / NIGHT_LENGTH); }
+
+  /**
+   * Dawn: pay the dawn bonus, then the manor's curse rewinds the clock to midnight and
+   * drags fresh mud through some of the rooms you'd cleaned. Each night is a little meaner.
+   */
+  private dawnBreaks() {
+    const n = this.night; // nights now survived
+    const overall = this.dirt.overall();
+    const bonus = Math.round((2000 + (this.battery / this.batteryMax) * 1000 + overall * 3000) * (1 + (n - 1) * 0.25));
+    const coins = 40 + 20 * (n - 1);
+    this.score += bonus;
+    this.coins += coins;
+    this.coinsEarned += coins;
+    this.sfx.dawn();
+    this.chimeClocks(5);
+    this.addTrauma(0.3);
+    this.dawnGlow = 5;
+    this.cb.onCaption(`☀️ DAWN — NIGHT ${n} SURVIVED! +${bonus.toLocaleString()}`, true);
+    this.popup(`+${coins} 🪙`, '#ffd84d', 1.6, 1.5);
+    for (let k = 0; k < 60; k++) {
+      this.glow.spawn(this.px + (Math.random() - 0.5) * 10, 0.2, this.pz + (Math.random() - 0.5) * 10, 0, 2 + Math.random() * 3, 0, 1, 0.85, 0.4, 0.35, 1.4, -1);
+    }
+    setTimeout(() => {
+      if (this.phase !== 'playing' && this.phase !== 'tidy') return;
+      if (this.phase === 'playing') this.cb.onCaption(null); // a tidy cutscene owns the caption while it runs
+      // the curse: the owners never come; midnight strikes again and the mud creeps back
+      const pool = ROOMS.map((_, i) => i).filter((i) => this.cleared[i] && this.dirt.counted[i] && i !== this.curRoom);
+      const count = Math.min(pool.length, 1 + n);
+      for (let k = 0; k < count; k++) {
+        const room = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+        this.cleared[room] = false;
+        this.dirt.total[room] = 0;
+        const steps = this.dirt.trailSteps(this.rng, room, 26 + Math.floor(Math.random() * 14));
+        for (const st of steps) this.dirt.total[room] += this.dirt.shoe(st.x, st.z, st.a, st.s, st.left);
+        this.dirt.total[room] = Math.max(1, this.dirt.total[room]);
+      }
+      this.sfx.ghost();
+      this.cb.onToast(`🌑 The sun sinks again… NIGHT ${n + 1} begins${count ? ` — mud is back in ${count} room${count === 1 ? '' : 's'}` : ''}!`, 'bad');
+    }, 3200);
+    this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 2);
   }
 
   /** Pay to recharge after the battery died and carry on the same run. Returns false if not possible. */
@@ -1667,7 +1726,7 @@ export class Game {
   private updateGhost(dt: number) {
     this.nextGhost -= dt;
     if (!this.ghost && this.nextGhost <= 0) {
-      this.nextGhost = Math.max(16, 34 - this.time * 0.06) + Math.random() * 8;
+      this.nextGhost = Math.max(Math.max(8, 16 - this.night * 2), 34 - this.time * 0.06) + Math.random() * 8;
       const candidates = ROOMS.map((_, i) => i).filter((i) => i !== this.curRoom && (!ROOMS[i].secret || this.dirt.counted[i]));
       const clearedC = candidates.filter((i) => this.cleared[i]);
       const pool = clearedC.length && Math.random() < 0.75 ? clearedC : candidates;

@@ -2,11 +2,23 @@ import { useEffect, useRef, useState } from 'react';
 import type { HudState } from '../game/Game';
 import { NIGHT_LENGTH } from '../game/constants';
 
+/** Clock time within the current night (the curse rewinds it to midnight every dawn). */
 export function formatClock(t: number) {
   const perHour = NIGHT_LENGTH / 5;
+  t %= NIGHT_LENGTH;
   const h = Math.floor(t / perHour);
   const m = Math.floor(((t % perHour) / perHour) * 60);
   return `${h === 0 ? 12 : h}:${m.toString().padStart(2, '0')} AM`;
+}
+
+/** 1-based number of the night in progress. */
+export function nightNumber(t: number) {
+  return Math.floor(t / NIGHT_LENGTH) + 1;
+}
+
+/** "Night 2 · 3:15 AM" */
+export function formatShift(t: number) {
+  return `Night ${nightNumber(t)} · ${formatClock(t)}`;
 }
 
 function Bar({ value, max, color, label, icon, warn }: { value: number; max: number; color: string; label: string; icon: string; warn?: boolean }) {
@@ -67,7 +79,7 @@ export default function HUD({
     lastMult.current = hud.mult;
   }, [hud.mult]);
 
-  const night = Math.min(1, hud.time / NIGHT_LENGTH);
+  const night = (hud.time % NIGHT_LENGTH) / NIGHT_LENGTH;
 
   return (
     <div className="absolute inset-0 pointer-events-none select-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
@@ -83,6 +95,7 @@ export default function HUD({
       {/* top-center: clock + score */}
       <div className="absolute left-1/2 -translate-x-1/2 top-2 sm:top-4 flex flex-col items-center gap-1">
         <div className="panel rounded-xl px-2 sm:px-5 py-1.5 sm:py-2 text-center min-w-[92px] sm:min-w-[120px]">
+          <div className="text-[9px] sm:text-[10px] font-black tracking-[0.3em] text-indigo-200/70 leading-none mb-0.5">🌙 NIGHT {nightNumber(hud.time)}</div>
           <div className="font-display text-[11px] sm:text-sm tracking-[0.2em] text-amber-100/80">{formatClock(hud.time)}</div>
           <div className="h-1 mt-1 rounded-full bg-black/60 overflow-hidden">
             <div className="h-full" style={{ width: `${night * 100}%`, background: 'linear-gradient(90deg,#3b3a8a,#c66a3a,#ffd27a)' }} />

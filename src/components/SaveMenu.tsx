@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { MAX_MANUAL, SaveMeta, deleteAllSaves, deleteSave, listSaves } from '../game/saves';
-import { formatClock } from './HUD';
+import { formatShift } from './HUD';
 
 function ago(ts: number) {
   const s = Math.max(0, (Date.now() - ts) / 1000);
@@ -100,7 +100,7 @@ export function SaveMenu({ mode, inRun, version, onSave, onLoad, onClose }: Save
                     <span className="text-[11px] text-amber-100/40 whitespace-nowrap">{ago(s.date)}</span>
                   </div>
                   <div className="text-xs text-amber-100/60 tabular-nums">
-                    🕐 {formatClock(s.time)} · ⭐ {s.score.toLocaleString()} · 🪙 {s.coins} · 🏠 {s.roomsCleared}/10 · {Math.round(s.overall * 100)}% clean
+                    🕐 {formatShift(s.time)} · ⭐ {s.score.toLocaleString()} · 🪙 {s.coins} · 🏠 {s.roomsCleared}/10 · {Math.round(s.overall * 100)}% clean
                   </div>
                 </div>
                 <div className="flex gap-1.5 flex-wrap">

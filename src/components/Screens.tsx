@@ -4,7 +4,7 @@ import { UPGRADES, UpKey } from '../game/constants';
 import { DEV_MODE } from '../game/devmode';
 import { ScoreEntry, addScore, lastName, loadScores, qualifies, saveName } from '../game/highscores';
 import type { SaveMeta } from '../game/saves';
-import { formatClock } from './HUD';
+import { formatClock, formatShift, nightNumber } from './HUD';
 
 function RoombaIcon({ size = 120 }: { size?: number }) {
   return (
@@ -31,7 +31,7 @@ export function ScoreTable({ scores, highlight }: { scores: ScoreEntry[]; highli
           <tr key={i} className={`${i === highlight ? 'bg-amber-300/20 text-amber-100' : i % 2 ? 'bg-white/[0.03]' : ''}`}>
             <td className="py-1 pl-2 w-8 font-black text-amber-300/80">{i === 0 ? '👑' : `${i + 1}.`}</td>
             <td className="py-1 font-semibold truncate max-w-[120px]">{s.name}</td>
-            <td className="py-1 text-xs text-amber-100/50 text-center">{s.reason === 'dawn' ? '☀️' : '🪫'} {s.rooms}🏠</td>
+            <td className="py-1 text-xs text-amber-100/50 text-center">{s.nights !== undefined ? `☀️${s.nights}` : s.reason === 'dawn' ? '☀️' : '🪫'} {s.rooms}🏠</td>
             <td className="py-1 pr-2 text-right font-black tabular-nums gold-text">{s.score.toLocaleString()}</td>
           </tr>
         ))}
@@ -75,7 +75,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
           <div className="font-display text-amber-100/60 tracking-[0.4em] text-xs sm:text-sm">MIDNIGHT AT BLACKWOOD MANOR</div>
           <h1 className="font-display font-black text-5xl sm:text-7xl leading-none gold-text drop-shadow-[0_4px_20px_rgba(212,175,55,0.35)]">CLEAN SWEEP</h1>
           <p className="max-w-md text-amber-50/70 text-sm sm:text-base">
-            The mansion is a muddy disaster and the owners return at dawn. Somewhere in the dark, a little robot is about to wake up…
+            The owners left Blackwood Manor at midnight, swearing they'd be home by dawn. Dawn came. They didn't. Now the night keeps starting over, and something keeps tracking mud through the halls. Somewhere in the dark, a little robot is about to wake up…
           </p>
         </div>
 
@@ -85,7 +85,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
             <button onClick={onContinue} className={`btn-gold ${MENU_BTN}`}>
               <span>▶ CONTINUE SHIFT</span>
               <span className="text-[10px] font-bold opacity-70 tracking-normal tabular-nums">
-                {formatClock(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.roomsCleared}/10 rooms
+                {formatShift(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.roomsCleared}/10 rooms
               </span>
             </button>
           )}
@@ -112,7 +112,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
               <li>🔋 Battery drains as you drive. 🗑️ A full bin stops cleaning. Return to the <b className="text-emerald-300">dock</b> to charge & empty.</li>
               <li>🛒 Spend coins on upgrades while docked.</li>
               <li>👻 Beware: something keeps tracking mud back in…</li>
-              <li>☀️ Survive until <b>5:00 AM</b> for a big dawn bonus!</li>
+              <li>☀️ Every <b>5:00 AM</b> dawn pays a big bonus, then the curse winds the clock back to midnight and the mud returns. Keep sweeping as long as your battery lasts!</li>
             </ul>
             <div className="mt-3 pt-3 border-t border-white/10 text-xs text-amber-100/60">
               {isTouch ? 'Drag anywhere to steer · Hold ⚡ for turbo · ❚❚ to pause' : 'WASD / Arrows: drive · Shift/Space: turbo · E: shop at dock · P/Esc: pause · M: mute · R: restart'}
@@ -136,7 +136,7 @@ export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, mut
         {hud && (
           <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Score</div><div className="font-black text-amber-200">{hud.score.toLocaleString()}</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Time</div><div className="font-black text-amber-200">{formatClock(hud.time)}</div></div>
+            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Time</div><div className="font-black text-amber-200">{formatShift(hud.time)}</div></div>
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Rooms</div><div className="font-black text-amber-200">{hud.roomsCleared}/{hud.roomsTotal}</div></div>
           </div>
         )}
@@ -235,7 +235,7 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
   const save = () => {
     const n = (name.trim() || 'ROOMBA').slice(0, 12).toUpperCase();
     saveName(n);
-    const rank = addScore({ name: n, score: info.score, rooms: info.rooms, reason: info.reason, date: Date.now() });
+    const rank = addScore({ name: n, score: info.score, rooms: info.rooms, reason: info.reason, nights: info.nights, date: Date.now() });
     setSaved(rank);
     setScores(loadScores());
   };
@@ -251,7 +251,11 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
               {dawn ? 'SHIFT COMPLETE' : 'BATTERY DEPLETED'}
             </h2>
             <div className="text-sm text-amber-100/60 mt-1">
-              {dawn ? 'You made it to dawn. The owners will be… mostly pleased.' : 'Your little robot ran out of juice in the dark.'}
+              {dawn
+                ? 'You made it to dawn.'
+                : info.nights > 0
+                  ? `Your little robot swept through ${info.nights} night${info.nights === 1 ? '' : 's'} before running out of juice.`
+                  : 'Your little robot ran out of juice before the first dawn.'}
             </div>
           </div>
           <div className="text-center">
@@ -260,7 +264,7 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
             {info.bonus > 0 && <div className="text-emerald-300 text-sm font-bold">incl. dawn bonus +{info.bonus.toLocaleString()}</div>}
           </div>
           <div className="grid grid-cols-4 gap-2 text-center text-xs">
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Survived</div><div className="font-black text-amber-200">{formatClock(info.time)}</div></div>
+            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Lasted</div><div className="font-black text-amber-200">Night {nightNumber(info.time)}</div><div className="text-[10px] text-amber-100/60">{formatClock(info.time)}</div></div>
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Rooms</div><div className="font-black text-amber-200">{info.rooms}/10</div></div>
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Manor</div><div className="font-black text-amber-200">{Math.round(info.overall * 100)}%</div></div>
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Coins</div><div className="font-black text-amber-200">{info.coinsEarned}</div></div>
