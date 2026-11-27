@@ -60,6 +60,21 @@ export function setLevel(n: number) {
 }
 setLevel(0);
 
+/**
+ * Override the live level bindings with an arbitrary LevelDef (the level designer edits a level in place
+ * and rebuilds the world from it, without touching LEVELS). The game restores the real bindings via
+ * setLevel() when a run starts, so this never leaks into normal play.
+ */
+export function setCustomLevel(level: LevelDef) {
+  LEVEL = level;
+  ROOMS = level.rooms;
+  SECRET_DOORS = level.secretDoors;
+  DOORS = [...level.doors, ...SECRET_DOORS.map(([c, r, key]) => [c, r, 1, 1, key] as Door)];
+  FURNITURE = level.furniture;
+  RUGS = level.rugs;
+  DOCK = level.dock;
+}
+
 export type Facing = 'n' | 's' | 'e' | 'w';
 export interface FurnDef {
   t: string;
@@ -67,9 +82,10 @@ export interface FurnDef {
   z: number;
   w?: number; // local length
   d?: number; // local depth
-  f?: Facing; // direction the front faces
+  f?: Facing; // direction the front faces (cardinal; ignored when ry is set)
+  ry?: number; // free yaw rotation in radians (overrides f when set)
   h?: number;
-  v?: number; // variant
+  v?: number; // variant / state index
 }
 
 export type UpKey = 'battery' | 'bin' | 'speed' | 'brush' | 'suction' | 'charger';

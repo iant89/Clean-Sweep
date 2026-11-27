@@ -5,6 +5,8 @@ import TouchControls from './components/TouchControls';
 import { GameOver, PauseMenu, Shop, StartScreen } from './components/Screens';
 import { SaveMenu } from './components/SaveMenu';
 import DevMenu, { DEV_MODE } from './components/DevMenu';
+import LevelDesigner from './components/LevelDesigner';
+import type { LevelDef } from './game/levels';
 import { getAutosave, listSaves, loadSave } from './game/saves';
 
 interface Toast { id: number; text: string; kind: ToastKind }
@@ -34,6 +36,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [saveMenu, setSaveMenu] = useState<'save' | 'load' | null>(null);
   const [savesVersion, setSavesVersion] = useState(0);
+  const [designer, setDesigner] = useState(false);
+  const [playtesting, setPlaytesting] = useState(false);
+  /** Seed the level designer is opened with: set when Test Play is pressed so the design survives. */
+  const designerSeedRef = useRef<LevelDef | null>(null);
   const toastId = useRef(0);
   const isTouch = typeof window !== 'undefined' && (window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window);
 
@@ -93,6 +99,21 @@ export default function App() {
   useEffect(() => {
     if (phase !== 'menu' && phase !== 'paused') setSaveMenu(null);
   }, [phase]);
+
+  // a playtest run is over once we're back at the menu (cleared via Back to Editor or Menu)
+  useEffect(() => {
+    if (phase === 'menu') setPlaytesting(false);
+  }, [phase]);
+
+  /** Abandon the playtest run and reopen the level editor with the in-progress design. */
+  const backToEditor = useCallback(() => {
+    const g = gameRef.current;
+    if (g) g.toMenu();
+    setOver(null);
+    setToasts([]);
+    setPlaytesting(false);
+    setDesigner(true);
+  }, []);
 
   const loadById = useCallback((id: string) => {
     const g = gameRef.current;
@@ -209,6 +230,7 @@ export default function App() {
           saveCount={saveCount}
           onContinue={continueRun}
           onLoadMenu={() => setSaveMenu('load')}
+          onDesigner={() => { designerSeedRef.current = null; setDesigner(true); }}
         />
       )}
 
@@ -217,10 +239,11 @@ export default function App() {
           hud={hud}
           muted={muted}
           onResume={() => game?.resume()}
-          onRestart={() => play(false)}
+          onRestart={() => { if (playtesting) { const g = gameRef.current; if (g) g.startRun(false, g.level); } else play(false); }}
           onMenu={() => game?.toMenu()}
           onMute={() => game?.toggleMute()}
           onSaveMenu={() => setSaveMenu('save')}
+          onDesigner={playtesting ? backToEditor : undefined}
         />
       )}
 
@@ -238,7 +261,31 @@ export default function App() {
       {phase === 'shop' && hud && <Shop hud={hud} isTouch={isTouch} onBuy={(k) => game?.buy(k)} onBuyMachine={() => game?.buyMachine()} onSwitchMachine={(i) => game?.switchMachine(i)} onClose={() => game?.closeShop()} />}
 
       {phase === 'gameover' && over && (
-        <GameOver info={over} isTouch={isTouch} onRestart={() => play(false)} onMenu={() => { setOver(null); game?.toMenu(); }} onRevive={() => { if (game?.revive()) setOver(null); }} />
+        <GameOver info={over} isTouch={isTouch} onRestart={() => { setOver(null); if (playtesting) { const g = gameRef.current; if (g) g.startRun(false, g.level); } else play(false); }} onMenu={() => { setOver(null); game?.toMenu(); }} onRevive={() => { if (game?.revive()) setOver(null); }} onDesigner={playtesting ? backToEditor : undefined} />
+      )}
+
+      {designer && (
+        <LevelDesigner
+          initialDef={designerSeedRef.current}
+          onExit={() => setDesigner(false)}
+          onPlay={(def) => {
+            designerSeedRef.current = def;
+            setPlaytesting(true);
+            setDesigner(false);
+            game?.playCustomLevel(def);
+          }}
+        />
+      )}
+
+      {/* floating return-to-editor button while playtesting a custom level */}
+      {playtesting && !designer && phase !== 'gameover' && (
+        <button
+          onClick={backToEditor}
+          className="absolute left-2 z-40 panel rounded-full px-3 py-1.5 text-xs font-semibold text-cyan-100 border border-cyan-400/40 hover:bg-cyan-400/15 pointer-events-auto"
+          style={{ bottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+        >
+          🛠️ Editor
+        </button>
       )}
 
       {loading && (

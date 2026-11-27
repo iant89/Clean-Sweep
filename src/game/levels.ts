@@ -65,6 +65,36 @@ function fromMap(def: Omit<LevelDef, 'doors' | 'rooms'> & { map: string[]; rooms
   return { ...def, rooms, doors };
 }
 
+/**
+ * Same as fromMap but tolerant: a room with no tiles yet gets a zero rect instead of throwing, so the
+ * level designer can render a preview of a half-built floor plan.
+ */
+export function levelFromMap(def: Omit<LevelDef, 'doors' | 'rooms'> & { map: string[]; rooms: Omit<RoomDef, 'rect'>[] }): LevelDef {
+  const at = (c: number, r: number) => def.map[r]?.[c] ?? '#';
+  const rows = def.map.length, cols = def.map[0].length;
+  const rooms: RoomDef[] = def.rooms.map((room) => {
+    let best: RoomDef['rect'] = [0, 0, 0, 0], area = 0;
+    for (let r0 = 0; r0 < rows; r0++) for (let c0 = 0; c0 < cols; c0++) {
+      if (at(c0, r0) !== room.key) continue;
+      let maxW = cols;
+      for (let r1 = r0; r1 < rows && at(c0, r1) === room.key; r1++) {
+        let w = 0;
+        while (w < maxW && at(c0 + w, r1) === room.key) w++;
+        maxW = w;
+        const a = maxW * (r1 - r0 + 1);
+        if (a > area) { area = a; best = [c0, r0, maxW, r1 - r0 + 1]; }
+      }
+    }
+    return { ...room, rect: best };
+  });
+  const doors: Door[] = [];
+  def.map.forEach((row, r) => [...row].forEach((ch, c) => {
+    if (ch !== '#' && ch === ch.toLowerCase()) doors.push([c, r, 1, 1, ch.toUpperCase()]);
+  }));
+  return { ...def, rooms, doors };
+}
+
+
 const P2 = Math.PI / 2;
 const PI = Math.PI;
 

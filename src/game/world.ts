@@ -208,6 +208,8 @@ class SB {
 }
 
 const facingRot = (f: Facing | undefined) => (f === 'n' ? Math.PI : f === 'e' ? Math.PI / 2 : f === 'w' ? -Math.PI / 2 : 0);
+/** Full yaw rotation for a furniture piece: free ry when set, otherwise the cardinal facing. */
+const furnRot = (f: FurnDef) => f.ry ?? facingRot(f.f);
 const rotXZ = (lx: number, lz: number, a: number) => [lx * Math.cos(a) + lz * Math.sin(a), -lx * Math.sin(a) + lz * Math.cos(a)];
 
 // ---------------------------------------------------------------- textures
@@ -915,7 +917,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     for (const [lx, lz] of pts) { const [wx, wz] = rotXZ(lx, lz, a); addBox(x + wx, z + wz, s, s); }
   };
   const fullBox = (f: FurnDef, w: number, d: number) => {
-    const a = facingRot(f.f);
+    const a = furnRot(f);
     const swap = Math.abs(Math.sin(a)) > 0.5;
     addBox(f.x, f.z, swap ? d : w, swap ? w : d);
   };
@@ -953,7 +955,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   type Surf = { t: string; x: number; z: number; hw: number; hd: number; top: number; r: number; room: number };
   const surfaces: Surf[] = FURNITURE.filter((f) => ['table', 'desk', 'roundtable', 'counter', 'stove', 'island'].includes(f.t)).map((f) => {
     const w = f.w ?? 1, d = f.d ?? 1;
-    const swap = Math.abs(Math.sin(facingRot(f.f))) > 0.5;
+    const swap = Math.abs(Math.sin(furnRot(f))) > 0.5;
     const top = f.t === 'table' ? (f.h ?? 1.6) : f.t === 'desk' ? 1.65 : f.t === 'roundtable' ? 1.74 : 1.77;
     return { t: f.t, x: f.x, z: f.z, hw: (swap ? d : w) / 2, hd: (swap ? w : d) / 2, top, r: f.t === 'roundtable' ? w / 2 : 0, room: roomAt(f.x, f.z) };
   });
@@ -1046,7 +1048,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   };
 
   for (const f of FURNITURE) {
-    const a = facingRot(f.f);
+    const a = furnRot(f);
     const w = f.w ?? 1, d = f.d ?? 1;
     switch (f.t) {
       case 'table': {
@@ -1091,7 +1093,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'tipchair': {
-        const ang = rng() * Math.PI * 2;
+        const ang = f.ry != null ? f.ry : rng() * Math.PI * 2;
         const it = newItem('tipchair', f.x, f.z);
         const from = frameM(f.x, f.z, ang, 0.48).multiply(new THREE.Matrix4().makeTranslation(0, 0, 1.0)).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
         // footprint ~1.0 x 2.1 centered roughly at offset
@@ -1168,7 +1170,8 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.box(f.t === 'stove' ? M.black : baseMat, 0, 0.15, 0, w, 1.5, d);
         sb.box(f.v === 1 ? M.woodMed : M.marbleW, 0, 1.65, 0, w + 0.1, 0.12, d + 0.1);
         if (f.t === 'stove') {
-          for (const lx of [-0.6, 0.6]) for (const lz of [-0.35, 0.35]) sb.cyl(M.steel, lx, 1.77, lz, 0.25, 0.25, 0.04, 14);
+          const burnerMat = f.v === 1 ? M.ember : M.steel;
+          for (const lx of [-0.6, 0.6]) for (const lz of [-0.35, 0.35]) sb.cyl(burnerMat, lx, 1.77, lz, 0.25, 0.25, 0.04, 14);
         } else if (f.t === 'island') {
           sb.sph(M.pot, -2, 1.95, 0, 0.3); sb.sph(M.plant2, -1.6, 1.9, 0.3, 0.2); sb.cyl(M.steel, 2, 1.77, 0.2, 0.35, 0.3, 0.4, 12);
         } else if (f.v === 1) {
@@ -1183,24 +1186,39 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       case 'fridge': {
         sb.frame(f.x, f.z, a);
         sb.box(M.white, 0, 0, 0, w, 3.8, d);
-        sb.box(M.steel, w / 2 - 0.3, 1.5, d / 2 + 0.04, 0.08, 1.4, 0.08);
-        sb.box(M.black, 0, 2.6, d / 2 + 0.005, w, 0.03, 0.01);
+        if (f.v === 1) {
+          // doors swung open: two panels hinged at the sides, angled outward
+          sb.box(M.white, -w / 2 - 0.35, 1.9, d / 2 + 0.05, 0.7, 3.6, 0.06, 0, 0, 0.5);
+          sb.box(M.white, w / 2 + 0.35, 1.9, d / 2 + 0.05, 0.7, 3.6, 0.06, 0, 0, -0.5);
+          sb.box(M.steel, -w / 2 - 0.05, 1.5, d / 2 + 0.1, 0.08, 1.4, 0.08);
+          sb.box(M.steel, w / 2 + 0.05, 1.5, d / 2 + 0.1, 0.08, 1.4, 0.08);
+        } else {
+          sb.box(M.steel, w / 2 - 0.3, 1.5, d / 2 + 0.04, 0.08, 1.4, 0.08);
+          sb.box(M.black, 0, 2.6, d / 2 + 0.005, w, 0.03, 0.01);
+        }
         sb.reset();
         fullBox(f, w, d);
         break;
       }
       case 'piano': {
-        sb.frame(f.x, f.z, 0);
+        sb.frame(f.x, f.z, a);
         const pts: [number, number][] = [[-1.4, -0.9], [1.4, -0.9], [0.6, 1.0]];
         for (const [lx, lz] of pts) sb.cyl(M.black, lx, 0, lz, 0.12, 0.09, 1.1, 8);
         sb.box(M.black, 0, 1.1, 0, 3.4, 0.6, 2.6);
         sb.box(M.white, 0, 1.45, -1.45, 3.0, 0.08, 0.35);
         for (let k = 0; k < 14; k++) sb.box(M.black, -1.4 + k * 0.21, 1.53, -1.52, 0.08, 0.05, 0.2);
-        sb.box(M.black, 0.2, 1.7, 0.1, 3.0, 0.05, 2.2, 0, 0, 0.45);
+        if (f.v === 1) {
+          // lid propped open: raised board + diagonal stick
+          sb.box(M.black, 0, 2.5, -0.7, 3.0, 0.05, 1.4, 0.5, 0, 0);
+          sb.box(M.woodDark, 1.2, 1.4, -1.1, 0.04, 1.1, 0.04, 0, 0, 0.6);
+        } else {
+          sb.box(M.black, 0.2, 1.7, 0.1, 3.0, 0.05, 2.2, 0, 0, 0.45);
+        }
         sb.box(M.black, 0, 0, -2.3, 1.4, 0.75, 0.55);
         sb.reset();
-        legsCollide(f.x, f.z, 0, pts, 0.35);
-        addBox(f.x, f.z - 2.3, 1.4, 0.55);
+        legsCollide(f.x, f.z, a, pts, 0.35);
+        const [bx, bz] = rotXZ(0, -2.3, a);
+        addBox(f.x + bx, f.z + bz, 1.4, 0.55);
         break;
       }
       case 'pillar': {
@@ -1213,7 +1231,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'plant': {
-        sb.frame(f.x, f.z, rng() * 6);
+        sb.frame(f.x, f.z, a);
         sb.cyl(M.pot, 0, 0, 0, 0.48, 0.36, 0.9, 12);
         sb.sph(M.plant, 0, 1.35, 0, 0.62);
         sb.sph(M.plant2, 0.3, 1.75, 0.15, 0.45);
@@ -1223,7 +1241,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'statue': {
-        sb.frame(f.x, f.z, 0);
+        sb.frame(f.x, f.z, a);
         sb.box(M.stone, 0, 0, 0, 1.2, 1.4, 1.2);
         sb.box(M.stone, 0, 1.4, 0, 1.35, 0.12, 1.35);
         sb.box(M.marbleW, 0, 1.52, 0, 0.85, 0.45, 0.45);
@@ -1305,7 +1323,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'desk': {
-        sb.frame(f.x, f.z, 0);
+        sb.frame(f.x, f.z, a);
         sb.box(M.woodDark, -w / 2 + 0.6, 0, 0, 1.1, 1.5, d - 0.1);
         sb.box(M.woodDark, w / 2 - 0.6, 0, 0, 1.1, 1.5, d - 0.1);
         sb.box(M.woodMed, 0, 1.5, 0, w, 0.15, d);
@@ -1370,7 +1388,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'books': {
-        const ang = rng() * 6;
+        const ang = f.ry != null ? f.ry : rng() * 6;
         const it = newItem('books', f.x, f.z);
         it.messyBoxes.push(mkBox(f.x, f.z, 1.1, 1.1));
         const F = frameM(f.x, f.z, ang);
@@ -1397,7 +1415,19 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'vase': {
-        const ang = rng() * 6;
+        if (f.v === 1) {
+          // permanently broken: static shards on the floor, no tidy cutscene
+          sb.frame(f.x, f.z, a);
+          sb.cyl(M.marbleW, 0, 0.15, 0, 0.3, 0.2, 0.3, 12, 0, Math.PI / 2);
+          for (let k = 0; k < 6; k++) {
+            const lx = (rng() - 0.5) * 1.6, lz = (rng() - 0.5) * 1.6;
+            sb.box(M.marbleW, lx, 0.025, lz, 0.18, 0.05, 0.12, 0, rng() * 3, 0);
+          }
+          sb.reset();
+          addBox(f.x, f.z, 0.9, 0.9);
+          break;
+        }
+        const ang = f.ry != null ? f.ry : rng() * 6;
         const it = newItem('vase', f.x, f.z);
         it.messyBoxes.push(mkBox(f.x, f.z, 0.9, 0.9));
         it.tidyBoxes.push(mkBox(f.x, f.z, 0.65, 0.65));
@@ -1413,7 +1443,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'pots': {
-        const ang = rng() * 6;
+        const ang = f.ry != null ? f.ry : rng() * 6;
         const it = newItem('pots', f.x, f.z);
         it.messyBoxes.push(mkBox(f.x, f.z, 1.4, 1.2));
         const F = frameM(f.x, f.z, ang);
@@ -1435,7 +1465,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         break;
       }
       case 'frame': {
-        const ang = rng() * 6;
+        const ang = f.ry != null ? f.ry : rng() * 6;
         const it = newItem('frame', f.x, f.z);
         it.messyBoxes.push(mkBox(f.x, f.z, 1.6, 1.6));
         const g = new THREE.Group();
@@ -1634,4 +1664,52 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   };
 
   return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, secrets, ambient, hemi, clocks, soundSources, mess, setMessState, animate };
+}
+
+/**
+ * Enable real-time shadow casting/receiving on a built world. Call after buildWorld() and once the
+ * renderer has shadow maps enabled (Engine constructor with shadows: true).
+ *   - Floor (large flat plane at y≈0) receives shadows.
+ *   - Furniture + walls cast and receive.
+ *   - The roomba casts a little ground shadow.
+ *   - Point lights and the directional moon light cast shadows.
+ */
+export function enableShadows(world: World, renderer: THREE.WebGLRenderer) {
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  world.scene.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.geometry) return;
+    // the floor is a large flat plane at y≈0 — receives but doesn't cast
+    const isFloor = mesh.position.y <= 0.01 && mesh.geometry instanceof THREE.PlaneGeometry;
+    if (isFloor) { mesh.receiveShadow = true; mesh.castShadow = false; return; }
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+  });
+  // roomba casts a shadow too
+  world.roomba.group.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.castShadow = true; });
+  // point lights: each casts a soft shadow from above
+  for (const l of world.lights) {
+    const pl = l.light;
+    pl.castShadow = true;
+    pl.shadow.mapSize.set(512, 512);
+    pl.shadow.bias = -0.002;
+    pl.shadow.camera.near = 0.5;
+    pl.shadow.camera.far = pl.distance || 30;
+  }
+  // directional moon light: one big shadow map covering the whole floor plan
+  const sun = world.scene.children.find((c) => c instanceof THREE.DirectionalLight) as THREE.DirectionalLight | undefined;
+  if (sun) {
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.left = -WORLD_W / 2;
+    sun.shadow.camera.right = WORLD_W / 2;
+    sun.shadow.camera.top = WORLD_H / 2;
+    sun.shadow.camera.bottom = -WORLD_H / 2;
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far = 200;
+    sun.shadow.bias = -0.0008;
+    sun.target.position.set(WORLD_W / 2, 0, WORLD_H / 2);
+    world.scene.add(sun.target);
+  }
 }
