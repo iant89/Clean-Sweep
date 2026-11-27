@@ -88,3 +88,47 @@ export const UPGRADES: UpgradeDef[] = [
   { key: 'suction', name: 'Cyclone Suction', desc: '+30% suction power', icon: '🌪️', costs: [20, 40, 70, 110, 160] },
   { key: 'charger', name: 'Quick Dock', desc: '+60% charge & empty speed', icon: '🔌', costs: [15, 35, 60, 95, 140] },
 ];
+
+/** Base stat multipliers a machine gives, on top of its upgrades. */
+export type MachineStats = Record<UpKey, number>;
+export interface MachineDef {
+  name: string;
+  icon: string;
+  desc: string;
+  /** Coins to buy it (once every upgrade on the previous machine is maxed). */
+  price: number;
+  mult: MachineStats;
+  /** Upgrade prices on this machine are multiplied by this. */
+  costMul: number;
+}
+/**
+ * The cleaning machines, in order. Buying the next one resets the upgrades so they can be bought again
+ * for the new machine. Brush multipliers stay modest so the cleaning radius can never reach through a wall.
+ */
+export const MACHINES: MachineDef[] = [
+  {
+    name: 'Robo Vacuum', icon: '🤖', desc: 'Where every career starts.', price: 0, costMul: 1,
+    mult: { battery: 1, bin: 1, speed: 1, brush: 1, suction: 1, charger: 1 },
+  },
+  {
+    name: 'Mop & Sweep Bot', icon: '🧽', desc: 'Sweeps, then mops behind itself. Mud doesn\'t stand a chance.', price: 600, costMul: 2,
+    mult: { battery: 1.2, bin: 1.25, speed: 1.05, brush: 1.15, suction: 1.5, charger: 1.2 },
+  },
+  {
+    name: 'Auto Shop Vac', icon: '🌀', desc: 'A canister vac that drives itself. Huge bin, huge suction.', price: 1500, costMul: 3.5,
+    mult: { battery: 1.4, bin: 2, speed: 1.1, brush: 1.3, suction: 2.2, charger: 1.4 },
+  },
+  {
+    name: 'Floor Scrubber', icon: '🚜', desc: 'Industrial scrub deck and squeegee. Built for hotel lobbies.', price: 3500, costMul: 5,
+    mult: { battery: 1.8, bin: 2.6, speed: 1.15, brush: 1.45, suction: 3, charger: 1.7 },
+  },
+  {
+    name: 'Hover Cleaner', icon: '🛸', desc: 'Floats on a cushion of air. Cleans like it\'s from the future.', price: 7000, costMul: 7,
+    mult: { battery: 2.2, bin: 3.2, speed: 1.3, brush: 1.6, suction: 4, charger: 2 },
+  },
+];
+
+/** Coins for the next level of an upgrade on a given machine. */
+export function upgradeCost(u: UpgradeDef, lvl: number, machine: number) {
+  return Math.round(u.costs[lvl] * MACHINES[Math.min(machine, MACHINES.length - 1)].costMul);
+}

@@ -473,6 +473,82 @@ export interface RoombaModel {
   brushes: THREE.Group[];
   light: THREE.PointLight;
   glow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  shell: THREE.MeshPhongMaterial;
+  top: THREE.MeshPhongMaterial;
+  /** Machine-specific extras (mop pad, canister, scrub deck, hover ring); rebuilt by setMachineLook. */
+  extras: THREE.Group;
+  /** Flashing beacon / hover ring material, driven from the game loop; null when the machine has none. */
+  beacon: THREE.MeshBasicMaterial | null;
+  machine: number;
+}
+
+/**
+ * Dress the robot as one of the machines (0 robo vacuum … 4 hover cleaner). The round base, face and
+ * side brushes stay; colours change and each machine bolts its own kit on top.
+ */
+export function setMachineLook(r: RoombaModel, machine: number) {
+  r.machine = machine;
+  r.body.remove(r.extras);
+  r.extras.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.geometry) m.geometry.dispose();
+    if (m.material && m.material !== r.ledMat) (m.material as THREE.Material).dispose();
+  });
+  const x = new THREE.Group();
+  r.extras = x;
+  r.beacon = null;
+  r.body.add(x);
+  const phong = (color: number, opts: THREE.MeshPhongMaterialParameters = {}) => new THREE.MeshPhongMaterial({ color, shininess: 80, specular: 0x555566, ...opts });
+  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, px: number, py: number, pz: number, rx = 0, ry = 0, rz = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(px, py, pz);
+    m.rotation.set(rx, ry, rz);
+    x.add(m);
+    return m;
+  };
+  const colours: [number, number][] = [[0x1d1f24, 0x2f333b], [0xe6ecf0, 0xb4c3cc], [0xf2b705, 0x2a2a2e], [0xb3261e, 0x34302e], [0x2b2152, 0x5b3fd1]];
+  const [shell, top] = colours[Math.min(machine, colours.length - 1)];
+  r.shell.color.setHex(shell);
+  r.top.color.setHex(top);
+  r.brushes.forEach((b) => (b.visible = machine < 4));
+  r.body.position.y = 0;
+  switch (machine) {
+    case 1: { // mop & sweep: clear water tank on top, blue mop pad trailing behind
+      add(new THREE.CylinderGeometry(0.2, 0.2, 0.16, 20), phong(0x6fc3ff, { transparent: true, opacity: 0.55 }), 0, 0.42, -0.2);
+      add(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 12), phong(0xffffff), 0, 0.52, -0.2);
+      add(new THREE.BoxGeometry(0.95, 0.04, 0.34), phong(0x2f7fd8, { shininess: 10 }), 0, 0.025, -0.5);
+      add(new THREE.BoxGeometry(0.9, 0.06, 0.06), phong(0x8a9aa6), 0, 0.07, -0.36);
+      break;
+    }
+    case 2: { // auto shop vac: canister, lid, hose arching to a wide front nozzle
+      const yellow = phong(0xf2b705), black = phong(0x1b1b1f);
+      add(new THREE.CylinderGeometry(0.27, 0.3, 0.5, 24), yellow, 0, 0.59, -0.2);
+      add(new THREE.CylinderGeometry(0.29, 0.29, 0.08, 24), black, 0, 0.88, -0.2);
+      add(new THREE.CylinderGeometry(0.05, 0.05, 0.1, 10), black, 0, 0.96, -0.2);
+      add(new THREE.TorusGeometry(0.3, 0.045, 8, 16, Math.PI), black, 0.32, 0.36, -0.02, 0, Math.PI / 2, 0);
+      add(new THREE.BoxGeometry(0.85, 0.07, 0.14), black, 0, 0.04, 0.55);
+      break;
+    }
+    case 3: { // floor scrubber: tall housing, squeegee bar, orange beacon
+      const red = phong(0xb3261e), dark = phong(0x232124);
+      add(new THREE.BoxGeometry(0.62, 0.36, 0.5), red, 0, 0.52, -0.16);
+      add(new THREE.BoxGeometry(0.66, 0.05, 0.54), dark, 0, 0.72, -0.16);
+      add(new THREE.BoxGeometry(1.35, 0.07, 0.09), dark, 0, 0.05, -0.62);
+      add(new THREE.BoxGeometry(0.06, 0.06, 0.25), dark, -0.45, 0.08, -0.5);
+      add(new THREE.BoxGeometry(0.06, 0.06, 0.25), dark, 0.45, 0.08, -0.5);
+      r.beacon = new THREE.MeshBasicMaterial({ color: 0xff9a1a });
+      add(new THREE.CylinderGeometry(0.07, 0.08, 0.12, 12), r.beacon, 0.2, 0.81, -0.3);
+      break;
+    }
+    case 4: { // hover cleaner: glowing thruster ring underneath, fins, a little dome
+      r.beacon = new THREE.MeshBasicMaterial({ color: 0x7af0ff });
+      add(new THREE.TorusGeometry(0.46, 0.05, 8, 40), r.beacon, 0, 0.02, 0, Math.PI / 2);
+      add(new THREE.SphereGeometry(0.2, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), phong(0x9fe8ff, { transparent: true, opacity: 0.6 }), 0, 0.34, -0.12);
+      for (const sx of [-1, 1]) add(new THREE.BoxGeometry(0.04, 0.18, 0.3), phong(0x5b3fd1), sx * 0.5, 0.3, -0.3, 0, 0, sx * -0.4);
+      break;
+    }
+    default: break;
+  }
 }
 
 function makeRoomba(): RoombaModel {
@@ -542,7 +618,9 @@ function makeRoomba(): RoombaModel {
   const light = new THREE.PointLight(0x9feaff, 0, 15, 2);
   light.position.set(0, 2.6, 0.4);
   group.add(light);
-  return { group, body, ledMat, eyeMat, eyes, brushes, light, glow };
+  const extras = new THREE.Group();
+  body.add(extras);
+  return { group, body, ledMat, eyeMat, eyes, brushes, light, glow, shell, top, extras, beacon: null, machine: 0 };
 }
 
 // ---------------------------------------------------------------- dock

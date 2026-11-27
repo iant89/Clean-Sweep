@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import {
-  CLEAR_THRESHOLD, COLS, DOCK, LEVEL, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey, WALL_H, setLevel,
+  CLEAR_THRESHOLD, COLS, DOCK, LEVEL, MACHINES, upgradeCost, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey, WALL_H, setLevel,
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS } from './levels';
-import { buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
+import { setMachineLook, buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
@@ -42,6 +42,10 @@ export interface HudState {
   docked: boolean;
   overall: number;
   upgrades: Record<UpKey, number>;
+  /** Index into MACHINES. */
+  machine: number;
+  /** Every upgrade maxed, so the next machine can be bought. */
+  allMaxed: boolean;
   turbo: boolean;
   homeHint: boolean;
   secretsFound: number;
@@ -142,6 +146,8 @@ export class Game {
   bin = 0;
   binBase = 100;
   up = emptyUpgrades();
+  /** Which cleaning machine you're driving (index into MACHINES). */
+  machine = 0;
   mult = 1;
   comboTime = 0;
   comboTimer = 0;
@@ -310,6 +316,7 @@ export class Game {
     this.dirt = new DirtMap(this.grid);
     this.dirt.dustMul = 1 + 0.15 * n;
     this.world = buildWorld(this.dirt.tex, this.grid);
+    setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
     const grid = this.grid;
     // walls are the grid's non-room tiles; furniture and secret doors are boxes (spliced in place as secrets open)
@@ -412,13 +419,43 @@ export class Game {
   }
 
   // ------------------------------------------------------------ derived stats
-  get batteryMax() { return 100 * (1 + 0.25 * this.up.battery); }
-  get binCap() { return this.binBase * (1 + 0.35 * this.up.bin); }
-  get speedMax() { return 5.8 * (1 + 0.1 * this.up.speed); }
-  get brushR() { return 0.85 * (1 + 0.15 * this.up.brush); }
-  get suction() { return 4.4 * (1 + 0.3 * this.up.suction); }
-  get chargeRate() { return 24 * (1 + 0.6 * this.up.charger); }
-  get emptyRate() { return this.binCap * 0.55 * (1 + 0.6 * this.up.charger); }
+  get mach() { return MACHINES[Math.min(this.machine, MACHINES.length - 1)].mult; }
+  get batteryMax() { return 100 * (1 + 0.25 * this.up.battery) * this.mach.battery; }
+  get binCap() { return this.binBase * (1 + 0.35 * this.up.bin) * this.mach.bin; }
+  get speedMax() { return 5.8 * (1 + 0.1 * this.up.speed) * this.mach.speed; }
+  // capped so the brushes can never reach through a 2-unit wall into the next room
+  get brushR() { return Math.min(2.4, 0.85 * (1 + 0.15 * this.up.brush) * this.mach.brush); }
+  get suction() { return 4.4 * (1 + 0.3 * this.up.suction) * this.mach.suction; }
+  get chargeRate() { return 24 * (1 + 0.6 * this.up.charger) * this.mach.charger; }
+  get emptyRate() { return this.binCap * 0.55 * (1 + 0.6 * this.up.charger) * this.mach.charger; }
+
+  /** Every upgrade on the current machine is maxed. */
+  get allMaxed() { return UPGRADES.every((u) => this.up[u.key] >= u.costs.length); }
+
+  /** Trade up to the next machine: needs every upgrade maxed. Upgrades start over on the new machine. */
+  buyMachine() {
+    const next = MACHINES[this.machine + 1];
+    if (!next || !this.allMaxed || (this.phase !== 'shop' && this.phase !== 'playing')) return false;
+    if (this.coins < next.price) { this.sfx.deny(); return false; }
+    this.coins -= next.price;
+    this.machine++;
+    this.up = emptyUpgrades();
+    this.battery = this.batteryMax;
+    this.bin = Math.min(this.bin, this.binCap);
+    setMachineLook(this.world.roomba, this.machine);
+    this.sfx.buy();
+    this.sfx.dawn();
+    this.squash.jump(6);
+    this.addTrauma(0.3);
+    for (let i = 0; i < 60; i++) {
+      const a = (i / 60) * Math.PI * 2;
+      this.glow.spawn(this.px, 0.4, this.pz, Math.cos(a) * 6, 2 + Math.random() * 3, Math.sin(a) * 6, 0.5, 1, 0.9, 0.4, 1, 4);
+    }
+    this.cb.onToast(`${next.icon} NEW MACHINE: ${next.name.toUpperCase()}!`, 'big');
+    this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1);
+    this.pushHud();
+    return true;
+  }
 
   // ------------------------------------------------------------ public API
   setMinimap(c: HTMLCanvasElement | null) { this.minimap = c; }
@@ -460,7 +497,7 @@ export class Game {
     const def = UPGRADES.find((u) => u.key === key)!;
     const lvl = this.up[key];
     if (lvl >= def.costs.length) return false;
-    const cost = def.costs[lvl];
+    const cost = upgradeCost(def, lvl, this.machine);
     if (this.coins < cost) { this.sfx.deny(); return false; }
     this.coins -= cost;
     const oldMax = this.batteryMax;
@@ -548,6 +585,7 @@ export class Game {
       bin: this.bin,
       binBase: this.binBase,
       up: { ...this.up },
+      machine: this.machine,
       mult: this.mult,
       comboTime: this.comboTime,
       comboTimer: this.comboTimer,
@@ -617,6 +655,8 @@ export class Game {
     this.coinsEarned = run.coinsEarned;
     this.coinFrac = run.coinFrac;
     this.binBase = run.binBase;
+    this.machine = Math.min(MACHINES.length - 1, run.machine ?? 0);
+    setMachineLook(this.world.roomba, this.machine);
     this.up = { ...emptyUpgrades(), ...run.up };
     this.battery = Math.min(this.batteryMax, run.battery);
     this.bin = run.bin;
@@ -722,6 +762,8 @@ export class Game {
     this.coinsEarned = 0;
     this.coinFrac = 0;
     this.up = emptyUpgrades();
+    this.machine = 0;
+    setMachineLook(this.world.roomba, 0);
     this.mult = 1;
     this.comboTime = 0;
     this.comboTimer = 0;
@@ -1770,6 +1812,11 @@ export class Game {
     if (playing || this.phase === 'intro') this.squash.update(dt);
     poseBody(r.group, r.body, this.mover, this.squash);
     const t = performance.now() / 1000;
+    if (r.machine >= 4) r.body.position.y = 0.2 + Math.sin(t * 3) * 0.04; // the hover cleaner floats
+    if (r.beacon) {
+      if (r.machine === 3) r.beacon.color.setRGB(1, 0.6, 0.1).multiplyScalar(Math.sin(t * 9) > 0 ? 1 : 0.25);
+      else r.beacon.color.setRGB(0.45, 0.94, 1).multiplyScalar(0.7 + 0.3 * Math.sin(t * 6));
+    }
     const spinning = playing && !this.docked && !this.ending;
     r.brushes[0].rotation.y += dt * (spinning ? 28 : 3);
     r.brushes[1].rotation.y -= dt * (spinning ? 28 : 3);
@@ -1872,6 +1919,8 @@ export class Game {
       docked: this.docked,
       overall: this.dirt.overall(),
       upgrades: { ...this.up },
+      machine: this.machine,
+      allMaxed: this.allMaxed,
       turbo: this.turbo,
       homeHint: this.homeHint,
     });

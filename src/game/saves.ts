@@ -51,6 +51,8 @@ export interface RunSnapshot {
   bin: number;
   binBase: number;
   up: Record<UpKey, number>;
+  /** Cleaning machine (older saves: the robo vacuum). */
+  machine?: number;
   mult: number;
   comboTime: number;
   comboTimer: number;

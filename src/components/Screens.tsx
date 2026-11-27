@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { REVIVE_MIN, type GameOverInfo, type HudState } from '../game/Game';
-import { UPGRADES, UpKey } from '../game/constants';
+import { MACHINES, UPGRADES, UpKey, upgradeCost } from '../game/constants';
 import { DEV_MODE } from '../game/devmode';
 import { ScoreEntry, addScore, lastName, loadScores, qualifies, saveName } from '../game/highscores';
 import type { SaveMeta } from '../game/saves';
@@ -110,7 +110,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
               <li>🧹 Drive over dirt & muddy footprints to vacuum them up. Keep sucking to build a <b className="text-cyan-300">COMBO</b>.</li>
               <li>✨ Get a room to <b>100%</b> for bonus <b className="text-amber-300">coins</b> & points.</li>
               <li>🔋 Battery drains as you drive. 🗑️ A full bin stops cleaning. Return to the <b className="text-emerald-300">dock</b> to charge & empty.</li>
-              <li>🛒 Spend coins on upgrades while docked.</li>
+              <li>🛒 Spend coins on upgrades while docked. Max them all to trade up to a better machine: mop bot, shop vac, floor scrubber…</li>
               <li>🚚 Get every room of a building spotless to unlock the <b>next building</b>: a hunting lodge, a grand hotel, and on it goes.</li>
               <li>👻 Beware: something keeps tracking mud back in…</li>
               <li>☀️ Every <b>5:00 AM</b> dawn pays a big bonus, then the curse winds the clock back to midnight and the mud returns. Keep sweeping as long as your battery lasts!</li>
@@ -152,7 +152,51 @@ export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, mut
   );
 }
 
-export function Shop({ hud, onBuy, onClose, isTouch }: { hud: HudState; onBuy: (k: UpKey) => void; onClose: () => void; isTouch: boolean }) {
+/** Current machine, and the next one: locked until every upgrade is maxed. */
+function MachinePanel({ hud, onBuyMachine }: { hud: HudState; onBuyMachine: () => void }) {
+  const cur = MACHINES[hud.machine];
+  const next = MACHINES[hud.machine + 1];
+  const levels = UPGRADES.reduce((n, u) => n + hud.upgrades[u.key], 0);
+  const maxLevels = UPGRADES.reduce((n, u) => n + u.costs.length, 0);
+  const can = !!next && hud.allMaxed && hud.coins >= next.price;
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
+      <div className="rounded-xl p-3 border border-cyan-300/30 bg-cyan-300/[0.07] flex gap-3 items-center">
+        <div className="text-3xl w-10 text-center">{cur.icon}</div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] uppercase tracking-widest text-cyan-200/70 font-bold">Machine {hud.machine + 1} of {MACHINES.length}</div>
+          <div className="font-bold text-amber-50 truncate">{cur.name}</div>
+          <div className="text-xs text-amber-100/60">{cur.desc}</div>
+        </div>
+      </div>
+      {next ? (
+        <button
+          onClick={onBuyMachine}
+          disabled={!hud.allMaxed}
+          className={`text-left rounded-xl p-3 border transition-all flex gap-3 items-center ${
+            can ? 'bg-fuchsia-300/15 border-fuchsia-300/50 hover:bg-fuchsia-300/25 active:scale-[0.98]' : 'bg-white/[0.03] border-white/10 opacity-80'
+          }`}
+        >
+          <div className={`text-3xl w-10 text-center ${hud.allMaxed ? '' : 'grayscale opacity-60'}`}>{hud.allMaxed ? next.icon : '🔒'}</div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] uppercase tracking-widest text-fuchsia-200/80 font-bold">Next machine</div>
+            <div className="font-bold text-amber-50 truncate">{next.name}</div>
+            <div className="text-xs text-amber-100/60">
+              {hud.allMaxed ? next.desc : `Max every upgrade to unlock (${levels}/${maxLevels})`}
+            </div>
+          </div>
+          <div className={`font-black text-sm whitespace-nowrap ${can ? 'text-amber-200' : 'text-red-300/80'}`}>🪙{next.price}</div>
+        </button>
+      ) : (
+        <div className="rounded-xl p-3 border border-emerald-300/30 bg-emerald-400/10 flex items-center justify-center text-sm font-bold text-emerald-200">
+          🏆 The best machine money can buy
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function Shop({ hud, onBuy, onBuyMachine, onClose, isTouch }: { hud: HudState; onBuy: (k: UpKey) => void; onBuyMachine: () => void; onClose: () => void; isTouch: boolean }) {
   return (
     <div className="absolute inset-0 bg-black/65 flex items-center justify-center p-3 fade-in overflow-y-auto" style={{ backdropFilter: 'blur(3px)' }}>
       <div className="panel rounded-2xl p-4 sm:p-6 w-full max-w-2xl big-in my-auto">
@@ -166,11 +210,12 @@ export function Shop({ hud, onBuy, onClose, isTouch }: { hud: HudState; onBuy: (
             <span className="font-black text-xl text-amber-200 tabular-nums">{hud.coins}</span>
           </div>
         </div>
+        <MachinePanel hud={hud} onBuyMachine={onBuyMachine} />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {UPGRADES.map((u, i) => {
             const lvl = hud.upgrades[u.key];
             const maxed = lvl >= u.costs.length;
-            const cost = maxed ? 0 : u.costs[lvl];
+            const cost = maxed ? 0 : upgradeCost(u, lvl, hud.machine);
             const can = !maxed && hud.coins >= cost;
             return (
               <button
