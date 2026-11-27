@@ -29,6 +29,12 @@ export class Sfx extends Synth {
     this.tone(300, 1.4, 'sine', 0.15, 250);
     this.tone(450, 1.6, 'sine', 0.08, -200, 0.3);
   }
+  /** Ghost sucked up by the vacuum: a whoosh up + a triumphant chime. */
+  ghostCatch() {
+    this.tone(200, 0.5, 'sawtooth', 0.12, 1600);
+    this.noise(0.35, 3000, 0.1, 0, 'highpass');
+    [659, 880, 1175, 1568].forEach((f, i) => this.tone(f, 0.3, 'triangle', 0.15, 0, i * 0.08));
+  }
   buy() { this.tone(1200, 0.08, 'square', 0.1); this.tone(1600, 0.08, 'square', 0.1, 0, 0.06); this.tone(2000, 0.25, 'triangle', 0.12, 0, 0.12); }
   over() { [523, 440, 349, 262].forEach((f, i) => this.tone(f, 0.4, 'triangle', 0.22, -20, i * 0.18)); }
   dawn() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.3, 'triangle', 0.2, 0, i * 0.12)); }
