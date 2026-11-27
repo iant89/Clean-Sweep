@@ -14,6 +14,8 @@ export interface EngineOptions {
   near?: number;
   far?: number;
   background?: THREE.ColorRepresentation;
+  /** Enable shadow map rendering (PCFSoft). Default false. */
+  shadows?: boolean;
 }
 
 /**
@@ -43,6 +45,10 @@ export class Engine {
     this.pixelRatio = Math.min(window.devicePixelRatio, this.isTouch ? 1.5 : 2);
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    if (opts.shadows) {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     const el = this.renderer.domElement;
     el.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
     container.appendChild(el);

@@ -3,8 +3,8 @@ import {
   CLEAR_THRESHOLD, COLS, DOCK, LEVEL, MACHINES, upgradeCost, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey, WALL_H, setLevel,
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
-import { LEVELS } from './levels';
-import { setMachineLook, buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
+import { LEVELS, LevelDef } from './levels';
+import { setMachineLook, buildGrid, buildWorld, enableShadows, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
@@ -197,6 +197,8 @@ export class Game {
   // developer cheats (only reachable through the ?devmode=true menu)
   devInfBattery = false;
   devFreezeTime = false;
+  /** True while playtesting a custom level from the designer: suppresses saving so the real autosave is untouched. */
+  isPlaytest = false;
 
   // roomba physics: the engine's mover (eased velocity, lean, bouncy substepped collision)
   mover = new Mover({ radius: ROOMBA_R });
@@ -250,6 +252,7 @@ export class Game {
       adaptive: () => this.phase === 'playing',
       onBlur: this.onBlur,
       fov: 50, near: 0.1, far: 220,
+      shadows: true,
     });
     this.isTouch = this.engine.isTouch;
     this.renderer = this.engine.renderer;
@@ -325,6 +328,7 @@ export class Game {
     this.dirt = new DirtMap(this.grid);
     this.dirt.dustMul = 1 + 0.15 * n;
     this.world = buildWorld(this.dirt.tex, this.grid, this.dirt.wetTex);
+    enableShadows(this.world, this.renderer);
     setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
     const grid = this.grid;
@@ -472,9 +476,9 @@ export class Game {
   // ------------------------------------------------------------ public API
   setMinimap(c: HTMLCanvasElement | null) { this.minimap = c; }
 
-  startRun(withIntro: boolean) {
+  startRun(withIntro: boolean, level = 0) {
     this.sfx.unlock();
-    this.resetRun();
+    this.resetRun(level);
     if (withIntro) {
       this.introT = 0;
       this.introStage = 0;
@@ -503,6 +507,25 @@ export class Game {
   toMenu() { this.autosave(); this.cb.onCaption(null); this.resetRun(); this.setRoombaPower(0); this.setPhase('menu'); this.sfx.hum(0, 0); }
   toggleMute() { this.sfx.setMuted(!this.sfx.muted); this.cb.onMute(this.sfx.muted); }
   setJoystick(x: number, y: number, active: boolean) { this.controls.setJoystick(x, y, active); }
+
+  /**
+   * Drop a custom LevelDef (from the level designer) into the rotation and start a fresh run on it,
+   * so a design can be playtested immediately. Replaces an existing entry with the same key.
+   * Falls back to the menu if the level can't be built, so the player is never stranded.
+   */
+  playCustomLevel(level: LevelDef) {
+    try {
+      let idx = LEVELS.findIndex((l) => l.key === level.key);
+      if (idx < 0) { LEVELS.push(level); idx = LEVELS.length - 1; }
+      else LEVELS[idx] = level;
+      this.startRun(false, idx);
+      this.isPlaytest = true; // suppress autosaves so the real game's saves are untouched
+    } catch (e) {
+      console.error('playCustomLevel failed', e);
+      this.cb.onToast('That level could not be built — back to the editor.', 'bad');
+      this.toMenu();
+    }
+  }
   setTurbo(b: boolean) { this.controls.setBoost(b); }
 
   /** Swap to another machine you already own; only on the dock. Battery keeps its charge level as a fraction. */
@@ -599,7 +622,7 @@ export class Game {
   // ------------------------------------------------------------ save / load
   /** True while there's a live run that can be saved. */
   get canSave() {
-    return (this.phase === 'playing' || this.phase === 'paused' || this.phase === 'shop' || this.phase === 'tidy') && !this.ending;
+    return (this.phase === 'playing' || this.phase === 'paused' || this.phase === 'shop' || this.phase === 'tidy') && !this.ending && !this.isPlaytest;
   }
 
   serialize(): RunSnapshot {
@@ -796,6 +819,7 @@ export class Game {
 
   resetRun(level = 0) {
     if (this.level !== level) this.buildLevel(level);
+    this.isPlaytest = false;
     this.time = 0;
     this.autosaveT = 0;
     this.score = 0;
@@ -1650,8 +1674,10 @@ export class Game {
 
   private startEnding(reason: 'battery' | 'dawn') {
     this.ending = reason;
-    deleteSave(AUTO_ID);
-    this.cb.onSaves?.();
+    if (!this.isPlaytest) {
+      deleteSave(AUTO_ID);
+      this.cb.onSaves?.();
+    }
     this.endTimer = reason === 'battery' ? 1.8 : 2.2;
     this.arrow.visible = false;
     this.turbo = false;

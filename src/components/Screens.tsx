@@ -48,12 +48,13 @@ export interface StartScreenProps {
   saveCount: number;
   onContinue: () => void;
   onLoadMenu: () => void;
+  onDesigner: () => void;
 }
 
 /** Every main-menu button shares one size. */
 const MENU_BTN = 'w-60 h-16 rounded-2xl px-4 font-black tracking-widest text-base flex flex-col items-center justify-center leading-tight';
 
-export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, onContinue, onLoadMenu }: StartScreenProps) {
+export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, onContinue, onLoadMenu, onDesigner }: StartScreenProps) {
   const scores = useMemo(() => loadScores(), []);
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -103,6 +104,10 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
         </div>
         {autosave && <div className="-mt-3 text-xs text-amber-100/40">A new shift will replace the autosave — make a manual save from the pause menu to keep it.</div>}
 
+        <button onClick={onDesigner} className="btn-ghost text-amber-100/80 rounded-full px-5 py-2 text-sm font-semibold tracking-widest mt-1">
+          🛠️ LEVEL DESIGNER
+        </button>
+
         <div className="grid sm:grid-cols-2 gap-4 w-full max-w-3xl">
           <div className="panel rounded-2xl p-4">
             <h2 className="font-display text-amber-200 tracking-widest text-sm mb-3">HOW TO PLAY</h2>
@@ -129,7 +134,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
   );
 }
 
-export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, muted, hud }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; muted: boolean; hud: HudState | null }) {
+export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, muted, hud, onDesigner }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; muted: boolean; hud: HudState | null; onDesigner?: () => void }) {
   return (
     <div className="absolute inset-0 bg-black/60 flex items-center justify-center p-4 fade-in" style={{ backdropFilter: 'blur(3px)' }}>
       <div className="panel rounded-2xl p-6 w-full max-w-sm flex flex-col gap-3 big-in">
@@ -146,6 +151,7 @@ export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, mut
         <button onClick={onRestart} className="btn-ghost rounded-xl py-2.5 font-bold">↻ Restart <span className="opacity-50 text-xs">(R)</span></button>
         <button onClick={onMute} className="btn-ghost rounded-xl py-2.5 font-bold">{muted ? '🔇 Sound off' : '🔊 Sound on'} <span className="opacity-50 text-xs">(M)</span></button>
         <button onClick={onMenu} className="btn-ghost rounded-xl py-2.5 font-bold">⌂ Main menu</button>
+        {onDesigner && <button onClick={onDesigner} className="btn-ghost rounded-xl py-2.5 font-bold text-cyan-200">🛠️ Back to Level Editor</button>}
         <div className="text-center text-[11px] text-amber-100/40">Progress autosaved — Continue from the main menu anytime.</div>
       </div>
     </div>
@@ -288,7 +294,7 @@ export function Shop({ hud, onBuy, onBuyMachine, onSwitchMachine, onClose, isTou
   );
 }
 
-export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info: GameOverInfo; onRestart: () => void; onMenu: () => void; onRevive: () => void; isTouch: boolean }) {
+export function GameOver({ info, onRestart, onMenu, onRevive, isTouch, onDesigner }: { info: GameOverInfo; onRestart: () => void; onMenu: () => void; onRevive: () => void; isTouch: boolean; onDesigner?: () => void }) {
   const [shown, setShown] = useState(0);
   const canEnter = useMemo(() => qualifies(info.score), [info]);
   const [name, setName] = useState(lastName());
@@ -407,6 +413,9 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
             </button>
             <button onClick={onMenu} className="btn-ghost rounded-xl px-5 font-bold">⌂ Menu</button>
           </div>
+          {onDesigner && (
+            <button onClick={onDesigner} className="btn-ghost rounded-xl py-2.5 font-bold text-cyan-200">🛠️ Back to Level Editor</button>
+          )}
         </div>
       </div>
     </div>
