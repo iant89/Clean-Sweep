@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { GameOverInfo, HudState } from '../game/Game';
+import { REVIVE_MIN, type GameOverInfo, type HudState } from '../game/Game';
 import { UPGRADES, UpKey } from '../game/constants';
 import { DEV_MODE } from '../game/devmode';
 import { ScoreEntry, addScore, lastName, loadScores, qualifies, saveName } from '../game/highscores';
@@ -50,6 +50,9 @@ export interface StartScreenProps {
   onLoadMenu: () => void;
 }
 
+/** Every main-menu button shares one size. */
+const MENU_BTN = 'w-60 h-16 rounded-2xl px-4 font-black tracking-widest text-base flex flex-col items-center justify-center leading-tight';
+
 export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, onContinue, onLoadMenu }: StartScreenProps) {
   const scores = useMemo(() => loadScores(), []);
   useEffect(() => {
@@ -76,24 +79,25 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
           </p>
         </div>
 
-        {autosave && (
-          <button onClick={onContinue} className="btn-gold rounded-2xl px-10 py-3 font-black tracking-widest flex flex-col items-center">
-            <span className="text-xl">▶ CONTINUE SHIFT</span>
-            <span className="text-xs font-bold opacity-70 tracking-normal tabular-nums">
-              {formatClock(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.roomsCleared}/10 rooms
-            </span>
-          </button>
-        )}
-        <div className="flex flex-col sm:flex-row gap-3 items-center">
-          <button onClick={() => onPlay(true)} className={`${autosave ? 'btn-ghost text-amber-100 px-6 py-3 text-base' : 'btn-gold px-10 py-4 text-xl'} rounded-2xl font-black tracking-widest`}>
+        {/* four buttons sit in a 2x2 block rather than a ragged 3 + 1 */}
+        <div className={`flex flex-wrap justify-center gap-3 w-full ${autosave && saveCount > 0 ? 'max-w-[31.5rem]' : 'max-w-3xl'}`}>
+          {autosave && (
+            <button onClick={onContinue} className={`btn-gold ${MENU_BTN}`}>
+              <span>▶ CONTINUE SHIFT</span>
+              <span className="text-[10px] font-bold opacity-70 tracking-normal tabular-nums">
+                {formatClock(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.roomsCleared}/10 rooms
+              </span>
+            </button>
+          )}
+          <button onClick={() => onPlay(true)} className={`${autosave ? 'btn-ghost text-amber-100' : 'btn-gold'} ${MENU_BTN}`}>
             {autosave ? '✦ NEW SHIFT' : '▶ START SHIFT'}
           </button>
-          <button onClick={() => onPlay(false)} className="btn-ghost rounded-2xl px-6 py-3 font-bold tracking-wider text-amber-100">
-            ⏩ {autosave ? 'New, skip intro' : 'Skip intro'}
+          <button onClick={() => onPlay(false)} className={`btn-ghost text-amber-100 ${MENU_BTN}`}>
+            ⏩ {autosave ? 'NEW, SKIP INTRO' : 'SKIP INTRO'}
           </button>
           {saveCount > 0 && (
-            <button onClick={onLoadMenu} className="btn-ghost rounded-2xl px-6 py-3 font-bold tracking-wider text-amber-100">
-              📂 Load game
+            <button onClick={onLoadMenu} className={`btn-ghost text-amber-100 ${MENU_BTN}`}>
+              📂 LOAD GAME
             </button>
           )}
         </div>
@@ -209,7 +213,7 @@ export function Shop({ hud, onBuy, onClose, isTouch }: { hud: HudState; onBuy: (
   );
 }
 
-export function GameOver({ info, onRestart, onMenu, isTouch }: { info: GameOverInfo; onRestart: () => void; onMenu: () => void; isTouch: boolean }) {
+export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info: GameOverInfo; onRestart: () => void; onMenu: () => void; onRevive: () => void; isTouch: boolean }) {
   const [shown, setShown] = useState(0);
   const canEnter = useMemo(() => qualifies(info.score), [info]);
   const [name, setName] = useState(lastName());
@@ -289,6 +293,21 @@ export function GameOver({ info, onRestart, onMenu, isTouch }: { info: GameOverI
           <div className="bg-black/30 rounded-xl p-2 max-h-56 overflow-y-auto scrollbar-thin">
             <ScoreTable scores={scores} highlight={saved ?? undefined} />
           </div>
+
+          {info.reason === 'battery' && (
+            info.reviveCost > 0 ? (
+              <button onClick={onRevive} className="btn-gold rounded-xl py-3 font-black tracking-widest flex flex-col items-center">
+                <span className="text-lg">🔋 RECHARGE & KEEP PLAYING</span>
+                <span className="text-xs font-bold opacity-75 tracking-normal">
+                  Costs {info.reviveCost.toLocaleString()} 🪙 of your {info.coins.toLocaleString()} · score and progress kept
+                </span>
+              </button>
+            ) : (
+              <div className="text-center text-xs text-amber-100/50 bg-white/5 rounded-xl px-3 py-2">
+                🔋 Recharging to keep playing costs at least {REVIVE_MIN} 🪙 — you have {info.coins.toLocaleString()}.
+              </div>
+            )
+          )}
 
           <div className="flex gap-2">
             <button onClick={onRestart} className="btn-gold flex-1 rounded-xl py-3 font-black tracking-widest text-lg">

@@ -237,7 +237,7 @@ export default function App() {
       {phase === 'shop' && hud && <Shop hud={hud} isTouch={isTouch} onBuy={(k) => game?.buy(k)} onClose={() => game?.closeShop()} />}
 
       {phase === 'gameover' && over && (
-        <GameOver info={over} isTouch={isTouch} onRestart={() => play(false)} onMenu={() => { setOver(null); game?.toMenu(); }} />
+        <GameOver info={over} isTouch={isTouch} onRestart={() => play(false)} onMenu={() => { setOver(null); game?.toMenu(); }} onRevive={() => { if (game?.revive()) setOver(null); }} />
       )}
 
       {loading && (

@@ -56,6 +56,17 @@ export interface GameOverInfo {
   time: number;
   coinsEarned: number;
   bonus: number;
+  /** Coins in hand when the run ended. */
+  coins: number;
+  /** Coins it costs to recharge and keep playing after the battery dies, or 0 if you can't afford it. */
+  reviveCost: number;
+}
+
+/** Minimum coins to revive after a dead battery; with 500+ coins it costs half of them instead. */
+export const REVIVE_MIN = 250;
+export function reviveCost(coins: number) {
+  if (coins < REVIVE_MIN) return 0;
+  return coins >= 500 ? Math.floor(coins / 2) : REVIVE_MIN;
 }
 
 export interface GameCallbacks {
@@ -1622,7 +1633,34 @@ export class Game {
       time: this.time,
       coinsEarned: this.coinsEarned,
       bonus,
+      coins: this.coins,
+      reviveCost: this.ending === 'battery' ? reviveCost(this.coins) : 0,
     });
+  }
+
+  /** Pay to recharge after the battery died and carry on the same run. Returns false if not possible. */
+  revive() {
+    if (this.phase !== 'gameover' || this.ending !== 'battery') return false;
+    const cost = reviveCost(this.coins);
+    if (!cost) return false;
+    this.coins -= cost;
+    this.ending = null;
+    this.endTimer = 0;
+    this.battery = this.batteryMax;
+    this.warned30 = this.warned12 = false;
+    this.vx = this.vz = 0;
+    this.trauma = 0;
+    this.setRoombaPower(1);
+    this.sfx.unlock();
+    this.sfx.boot();
+    this.bootFx();
+    this.cb.onCaption(null);
+    this.setPhase('playing');
+    this.last = performance.now();
+    this.autosaveT = AUTOSAVE_EVERY - 1;
+    this.pushHud();
+    this.cb.onToast(`🔋 Recharged for ${cost}🪙 — back to work!`, 'good');
+    return true;
   }
 
   // ------------------------------------------------------------ ghost
