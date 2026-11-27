@@ -37,6 +37,7 @@ export class Engine {
   private last = 0;
   private slowFrames = 0;
   private resizeObs?: ResizeObserver;
+  private onCtx?: (e: Event) => void;
   private disposed = false;
 
   constructor(readonly container: HTMLElement, private opts: EngineOptions) {
@@ -52,6 +53,10 @@ export class Engine {
     const el = this.renderer.domElement;
     el.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
     container.appendChild(el);
+    // Suppress the browser context menu on the game canvas so right-drag never shows it.
+    // Bound in capture phase so it always wins over any bubbling handler; cleaned up in dispose().
+    this.onCtx = (e: Event) => e.preventDefault();
+    el.addEventListener('contextmenu', this.onCtx, true);
     if (opts.background !== undefined) this.scene.background = new THREE.Color(opts.background);
 
     this.camera = new THREE.PerspectiveCamera(opts.fov ?? 50, 1, opts.near ?? 0.1, opts.far ?? 220);
@@ -103,6 +108,7 @@ export class Engine {
     this.resizeObs?.disconnect();
     window.removeEventListener('blur', this.onBlur);
     document.removeEventListener('visibilitychange', this.onVis);
+    if (this.onCtx) this.renderer.domElement.removeEventListener('contextmenu', this.onCtx, true);
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

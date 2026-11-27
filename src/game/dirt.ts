@@ -34,6 +34,10 @@ export class DirtMap {
   data = new Uint8Array(DW * DH);
   room = new Int8Array(DW * DH);
   mask = new Uint8Array(DW * DH);
+  /** Floor tiles where dust can settle — walls/wall-margins excluded but furniture NOT excluded,
+   *  so dust accumulates under tables, chairs, etc. (separate from `mask` which also blocks furniture
+   *  for roomba reachability / coin spawning). */
+  floorMask = new Uint8Array(DW * DH);
   sum = new Float64Array(ROOMS.length);
   total = new Float64Array(ROOMS.length);
   tex: THREE.DataTexture;
@@ -97,6 +101,9 @@ export class DirtMap {
         for (let i = Math.max(0, Math.floor(x0 * DPU)); i < Math.min(DW, Math.ceil(x1 * DPU)); i++) this.tileMask[j * DW + i] = 0;
       }
     }
+    // Snapshot the wall-only mask BEFORE furniture boxes are carved out.
+    // Dust uses floorMask (settles under furniture); roomba reachability/coins use mask (excludes furniture).
+    this.floorMask.set(this.mask);
     const m = 0.12;
     for (const b of boxes) {
       const i0 = Math.max(0, Math.floor((b.minX - m) * DPU)), i1 = Math.min(DW - 1, Math.ceil((b.maxX + m) * DPU));
@@ -116,7 +123,7 @@ export class DirtMap {
       for (let i = c * T - pad; i < (c + 1) * T + pad; i++) {
         if (i < 0 || j < 0 || i >= DW || j >= DH) continue;
         const idx = j * DW + i;
-        if (!open) { this.mask[idx] = 0; continue; }
+        if (!open) { this.mask[idx] = 0; this.floorMask[idx] = 0; continue; }
         const x = (i + 0.5) / DPU, cc = Math.floor(x / TILE), lx = x - cc * TILE;
         if (g[rr * COLS + cc] < 0) continue;
         let ok = 1;
@@ -125,6 +132,7 @@ export class DirtMap {
         else if (lz < margin && g[(rr - 1) * COLS + cc] < 0) ok = 0;
         else if (lz > TILE - margin && g[(rr + 1) * COLS + cc] < 0) ok = 0;
         this.mask[idx] = ok;
+        this.floorMask[idx] = ok;
       }
     }
   }
@@ -137,7 +145,7 @@ export class DirtMap {
 
   /** raise dirt to at least v (0..1 * strength) inside ellipse in local frame. returns bytes added */
   private put(idx: number, v: number) {
-    if (!this.mask[idx]) return 0;
+    if (!this.floorMask[idx]) return 0;
     const val = Math.min(255, Math.round(v * 255));
     const cur = this.data[idx];
     if (val <= cur) return 0;
@@ -232,7 +240,7 @@ export class DirtMap {
       const wz = (j + 0.5) / DPU;
       for (let i = 0; i < DW; i++) {
         const idx = j * DW + i;
-        if (!this.mask[idx]) continue;
+        if (!this.floorMask[idx]) continue;
         const rid = this.room[idx];
         const dens = Math.min(1.3, ROOMS[rid].dust * this.dustMul);
         const wx = (i + 0.5) / DPU;
