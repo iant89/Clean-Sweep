@@ -271,6 +271,53 @@ function blobTexture(inner: string, outer: string) {
   return t;
 }
 
+/** A ghostly sprite texture: a floating sheet-like figure with waving arms, hollow eyes, and a wispy tail. */
+export function ghostTexture() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 128;
+  const g = c.getContext('2d')!;
+  // translucent body fill with a soft radial core
+  const grd = g.createRadialGradient(64, 52, 4, 64, 60, 56);
+  grd.addColorStop(0, 'rgba(230,225,255,0.95)');
+  grd.addColorStop(0.5, 'rgba(200,190,245,0.7)');
+  grd.addColorStop(1, 'rgba(160,150,230,0.0)');
+  g.fillStyle = grd;
+  // ghost silhouette: rounded head top, body, wavy bottom hem
+  g.beginPath();
+  g.moveTo(28, 88);
+  g.quadraticCurveTo(20, 50, 64, 24);          // left shoulder up to crown
+  g.quadraticCurveTo(108, 50, 100, 88);         // crown down to right shoulder
+  // wavy bottom hem (4 humps)
+  g.quadraticCurveTo(92, 78, 82, 88);
+  g.quadraticCurveTo(74, 78, 64, 88);
+  g.quadraticCurveTo(54, 78, 46, 88);
+  g.quadraticCurveTo(38, 78, 28, 88);
+  g.closePath();
+  g.fill();
+  // two waving arm tendrils on the sides
+  g.beginPath();
+  g.moveTo(26, 70); g.quadraticCurveTo(8, 64, 14, 50);
+  g.quadraticCurveTo(20, 58, 30, 64);
+  g.fill();
+  g.beginPath();
+  g.moveTo(102, 70); g.quadraticCurveTo(120, 64, 114, 50);
+  g.quadraticCurveTo(108, 58, 98, 64);
+  g.fill();
+  // hollow eyes (dark ovals with a faint inner glow)
+  g.fillStyle = 'rgba(20,10,40,0.85)';
+  g.beginPath(); g.ellipse(52, 52, 6, 9, -0.15, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(76, 52, 6, 9, 0.15, 0, Math.PI * 2); g.fill();
+  g.fillStyle = 'rgba(180,170,255,0.5)';
+  g.beginPath(); g.ellipse(52, 50, 2.5, 4, -0.15, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.ellipse(76, 50, 2.5, 4, 0.15, 0, Math.PI * 2); g.fill();
+  // small mouth
+  g.fillStyle = 'rgba(30,15,50,0.6)';
+  g.beginPath(); g.ellipse(64, 68, 5, 7, 0, 0, Math.PI * 2); g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 function globeTexture() {
   const c = document.createElement('canvas');
   c.width = 128; c.height = 64;

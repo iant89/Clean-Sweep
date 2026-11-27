@@ -37,6 +37,7 @@ export interface GhostSnap {
   x: number;
   z: number;
   fade: number;
+  caught?: boolean;
 }
 
 /** Full snapshot of a run, produced by Game.serialize() and consumed by Game.restore(). */

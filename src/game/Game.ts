@@ -4,7 +4,7 @@ import {
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS, LevelDef } from './levels';
-import { setMachineLook, buildGrid, buildWorld, enableShadows, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
+import { setMachineLook, buildGrid, buildWorld, enableShadows, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
@@ -109,7 +109,7 @@ export type DevCheat =
   | 'coins100' | 'coins1000' | 'battery' | 'infBattery' | 'emptyBin' | 'maxUpgrades'
   | 'cleanRoom' | 'cleanAll' | 'ghost' | 'hour' | 'dawn' | 'freezeTime' | 'dock';
 
-interface Ghost { room: number; steps: { x: number; z: number; a: number; left: boolean; s: number }[]; idx: number; timer: number; x: number; z: number; fade: number }
+interface Ghost { room: number; steps: { x: number; z: number; a: number; left: boolean; s: number }[]; idx: number; timer: number; x: number; z: number; fade: number; caught?: boolean; spin?: number; spinT?: number }
 
 const AUTOSAVE_EVERY = 15;
 
@@ -276,11 +276,11 @@ export class Game {
     this.coinMesh.frustumCulled = false;
     for (let i = 0; i < 48; i++) this.coinsList.push({ x: 0, z: 0, active: false, phase: Math.random() * 6 });
 
-    // ghost
+    // ghost — a proper spectral figure with hollow eyes, waving arms, and a wispy tail
     this.ghostSprite = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: makeBlobTexture('rgba(220,200,255,0.95)', 'rgba(120,80,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      map: ghostTexture(), transparent: true, depthWrite: false, blending: THREE.NormalBlending, opacity: 0.9,
     }));
-    this.ghostSprite.scale.set(2.2, 2.2, 1);
+    this.ghostSprite.scale.set(2.6, 2.6, 1);
     this.ghostSprite.visible = false;
 
     // home arrow
@@ -655,7 +655,7 @@ export class Game {
       warned30: this.warned30,
       warned12: this.warned12,
       binWarned: this.binWarned,
-      ghost: g ? { room: g.room, steps: g.steps.map((s) => ({ ...s })), idx: g.idx, timer: g.timer, x: g.x, z: g.z, fade: g.fade } : null,
+      ghost: g ? { room: g.room, steps: g.steps.map((s) => ({ ...s })), idx: g.idx, timer: g.timer, x: g.x, z: g.z, fade: g.fade, caught: g.caught } : null,
       nextGhost: this.nextGhost,
       hourAnnounced: this.hourAnnounced,
       px: this.px,
@@ -1305,9 +1305,11 @@ export class Game {
   /**
    * Old incandescent bulbs: each one wanders slowly between brightness levels, now and then
    * stutters through a burst of quick flickers, and occasionally browns out and struggles back.
+   * When a ghost is haunting a room, the lights in that room flicker violently.
    */
   private flicker(dt: number) {
     const t = performance.now() / 1000;
+    const ghost = this.ghost;
     this.world.lights.forEach((l, i) => {
       const s = this.bulbs[i] ??= { level: 0.9, target: 0.9, hold: Math.random(), burst: 0, burstT: 0, burstV: 1, dip: 0 };
       s.hold -= dt;
@@ -1333,6 +1335,17 @@ export class Game {
         k *= 1 - 0.6 * Math.sin(s.dip * Math.PI);
       }
       k *= 0.97 + 0.03 * Math.sin(t * 37 + i * 5);
+      // Ghost haunting: lights in the ghost's room (or near it) flicker violently — strobing between
+      // near-dark and full brightness with a fast chaotic pattern.
+      if (ghost && !ghost.caught) {
+        const lroom = this.grid[Math.floor(l.light.position.z / TILE) * COLS + Math.floor(l.light.position.x / TILE)];
+        const near = lroom === ghost.room || Math.hypot(l.light.position.x - ghost.x, l.light.position.z - ghost.z) < 14;
+        if (near) {
+          // chaotic strobe: mostly dim with sharp flashes
+          const strobe = Math.random() < 0.18 ? 1.1 : 0.05 + Math.random() * 0.25;
+          k = k * 0.4 + strobe * 0.6;
+        }
+      }
       l.light.intensity = l.base * k;
       for (const m of l.bulbs) m.emissiveIntensity = 0.15 + 0.95 * k;
     });
@@ -1804,11 +1817,54 @@ export class Game {
       const steps = this.dirt.trailSteps(this.rng, room, 22 + Math.floor(Math.random() * 14));
       this.ghost = { room, steps, idx: 0, timer: 0, x: steps[0].x, z: steps[0].z, fade: 0 };
       this.ghostSprite.visible = true;
+      this.ghostSprite.scale.set(2.6, 2.6, 1);
+      this.ghostSprite.material.rotation = 0;
       this.sfx.ghost();
       this.cb.onToast(`👻 Ghostly muddy footprints in the ${ROOMS[room].name}!`, 'bad');
     }
     const g = this.ghost;
     if (!g) return;
+    if (g.caught) {
+      // sucked up as a spinning cyclone: orbit the vacuum in a tightening spiral while spinning fast
+      g.spinT = (g.spinT ?? 0) + dt;
+      g.spin = (g.spin ?? 0) + dt * (14 + g.spinT * 8); // spin accelerates as it's sucked in
+      g.fade -= dt * 2.2;
+      const pull = Math.min(1, dt * (6 + g.spinT * 4));
+      g.x += (this.px - g.x) * pull;
+      g.z += (this.pz - g.z) * pull;
+      if (g.fade <= 0) { this.ghost = null; this.ghostSprite.visible = false; return; }
+      const t = performance.now() / 1000;
+      const f = g.fade;
+      // orbit radius shrinks with fade; spin angle offset gives the cyclone spiral
+      const orbitR = 0.9 * f;
+      const oa = g.spin * 0.6;
+      const cx = g.x + Math.cos(oa) * orbitR, cz = g.z + Math.sin(oa) * orbitR;
+      // stretch horizontally + squash vertically as it's drawn into the funnel
+      const sw = 2.6 * (0.4 + f * 0.8);
+      const sh = 2.6 * f * f;
+      this.ghostSprite.scale.set(sw, sh, 1);
+      this.ghostSprite.material.rotation = g.spin;
+      this.ghostSprite.position.set(cx, 1.3 + Math.sin(t * 18) * 0.12 * f, cz);
+      this.ghostSprite.material.opacity = Math.min(1, f * 1.2);
+      // spiraling particle trails feeding into the vacuum
+      for (let p = 0; p < 2; p++) {
+        const pa = g.spin + p * Math.PI;
+        const pr = (0.3 + Math.random() * 0.5) * f;
+        this.glow.spawn(cx + Math.cos(pa) * pr, 0.8 + Math.random() * 0.6, cz + Math.sin(pa) * pr,
+          (this.px - cx) * 3 + Math.cos(pa + 1.5) * 2, 0.3 + Math.random() * 0.8, (this.pz - cz) * 3 + Math.sin(pa + 1.5) * 2,
+          0.4, 0.7, 0.9, 0.25, 0.5 + Math.random() * 0.4, -0.5);
+      }
+      return;
+    }
+    // Check if the roomba's suction catches the ghost (only while it's still walking / leaving prints)
+    if (g.idx < g.steps.length) {
+      const dx = g.x - this.px, dz = g.z - this.pz;
+      const catchR = this.brushR + 0.7;
+      if (dx * dx + dz * dz < catchR * catchR) {
+        this.catchGhost(g);
+        return;
+      }
+    }
     if (g.idx < g.steps.length) {
       g.fade = Math.min(1, g.fade + dt * 2);
       g.timer -= dt;
@@ -1830,8 +1886,33 @@ export class Game {
       if (g.fade <= 0) { this.ghost = null; this.ghostSprite.visible = false; return; }
     }
     const t = performance.now() / 1000;
+    this.ghostSprite.scale.set(2.6, 2.6, 1);
+    this.ghostSprite.material.rotation = 0;
     this.ghostSprite.position.set(g.x, 1.3 + Math.sin(t * 3) * 0.2, g.z);
     this.ghostSprite.material.opacity = g.fade * (0.75 + 0.25 * Math.sin(t * 9));
+  }
+
+  /** The roomba's suction caught the ghost: reward the player and start the suck-up animation. */
+  private catchGhost(g: Ghost) {
+    g.caught = true;
+    // reward: coins + score, scaled by how many footprints the ghost still had left (caught early = bigger reward)
+    const remaining = g.steps.length - g.idx;
+    const coins = 30 + remaining * 2;
+    const pts = Math.round((200 + remaining * 15) * this.mult);
+    this.coins += coins;
+    this.coinsEarned += coins;
+    this.score += pts;
+    this.addTrauma(0.3);
+    this.sfx.ghostCatch();
+    this.cb.onToast(`👻 GHOST CAUGHT! +${coins}🪙 +${pts}`, 'big');
+    this.popup(`+${coins} 🪙`, '#a0e0ff', 1.6, 1.5);
+    // burst of particles from the ghost's position
+    for (let k = 0; k < 40; k++) {
+      const a = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 3;
+      this.glow.spawn(g.x, 1.0 + Math.random() * 0.6, g.z, Math.cos(a) * sp, 1 + Math.random() * 2, Math.sin(a) * sp, 0.5, 0.8, 0.9, 0.3, 0.8 + Math.random() * 0.6, -0.4);
+    }
+    // the footprints already laid remain (the roomba still has to clean them), but no more will be added
+    this.pushHud();
   }
 
   private updateArrow(dt: number) {
