@@ -721,6 +721,7 @@ export class Game {
     const fog = this.world.scene.fog as THREE.Fog;
     if (p === 'menu') { fog.near = 120; fog.far = 280; }
     else if (p === 'intro') { fog.near = 8; fog.far = 46; }
+    else if (p === 'tidy') { fog.near = 70; fog.far = 160; }
     else { fog.near = 26; fog.far = 58; }
     this.cb.onPhase(p);
   }
@@ -1094,6 +1095,24 @@ export class Game {
     if (this.tidyQueue.length) this.tidyDelay = 0.8;
   }
 
+  /** Centre of a room and the camera distance (along TIDY_DIR) that fits all of it on screen. */
+  private tidyView(room: number) {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const idx of this.roomTiles[room]) {
+      const c = idx % COLS, r = (idx - c) / COLS;
+      x0 = Math.min(x0, c * TILE); x1 = Math.max(x1, (c + 1) * TILE);
+      z0 = Math.min(z0, r * TILE); z1 = Math.max(z1, (r + 1) * TILE);
+    }
+    const w = x1 - x0, d = z1 - z0;
+    const tanV = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    const tanH = tanV * this.camera.aspect;
+    // the floor is seen at an angle, so its depth shows up foreshortened
+    const elev = Math.atan2(TIDY_DIR.y, TIDY_DIR.z);
+    // extra vertical room for the cutscene's letterbox bars
+    const dist = Math.max(((d * Math.sin(elev)) / 2 / tanV) * 1.3, (w / 2 / tanH) * 1.15);
+    return { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, dist: THREE.MathUtils.clamp(dist, 12, 90) };
+  }
+
   private updateTidy(dt: number) {
     const td = this.tidy;
     if (!td) return;
@@ -1105,10 +1124,11 @@ export class Game {
       wantLook.set(this.camT.x, 0, this.camT.z - 0.6);
       wantPos.copy(this.gameCamPos(this.camT));
     } else {
+      // pulled back to show the whole room, leaning a little towards the item being put away
       const it = td.items[td.idx];
-      const h = 6.2 + it.spread * 0.55;
-      wantLook.set(it.focus.x, 0.6, it.focus.z);
-      wantPos.set(it.focus.x, h, it.focus.z + h * 0.72);
+      const v = this.tidyView(td.room);
+      wantLook.set(v.cx + (it.focus.x - v.cx) * 0.25, 0.3, v.cz + (it.focus.z - v.cz) * 0.25);
+      wantPos.copy(wantLook).addScaledVector(TIDY_DIR, v.dist);
     }
     const k = 1 - Math.exp(-3.2 * dt);
     td.camPos.lerp(wantPos, k);
@@ -2173,6 +2193,9 @@ export class Game {
     g.stroke();
   }
 }
+
+/** Direction from the look-at point to the camera during tidy cutscenes: steep, so walls hide little of the room. */
+const TIDY_DIR = new THREE.Vector3(0, 1, 0.5).normalize();
 
 /** Distance from the dock centre at which the ring grabs the roomba (ring's outer edge is 1.22). */
 const DOCK_CAPTURE_R = 1.3;
