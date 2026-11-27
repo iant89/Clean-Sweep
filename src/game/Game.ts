@@ -5,8 +5,8 @@ import {
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS } from './levels';
 import { setMachineLook, buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
-import { Particles } from './particles';
 import { Sfx } from './audio';
+import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
 
 export type Phase = 'menu' | 'intro' | 'playing' | 'paused' | 'shop' | 'gameover' | 'tidy';
@@ -100,7 +100,6 @@ export interface GameCallbacks {
 }
 
 interface Coin { x: number; z: number; active: boolean; phase: number }
-interface Popup { el: HTMLDivElement; x: number; y: number; z: number; age: number; life: number }
 export type DevCheat =
   | 'secrets' | 'nextLevel'
   | 'coins100' | 'coins1000' | 'battery' | 'infBattery' | 'emptyBin' | 'maxUpgrades'
@@ -108,16 +107,13 @@ export type DevCheat =
 
 interface Ghost { room: number; steps: { x: number; z: number; a: number; left: boolean; s: number }[]; idx: number; timer: number; x: number; z: number; fade: number }
 
-const KEYMAP: Record<string, 'u' | 'd' | 'l' | 'r' | 't'> = {
-  KeyW: 'u', ArrowUp: 'u', KeyS: 'd', ArrowDown: 'd', KeyA: 'l', ArrowLeft: 'l', KeyD: 'r', ArrowRight: 'r',
-  ShiftLeft: 't', ShiftRight: 't', Space: 't',
-};
-
 const AUTOSAVE_EVERY = 15;
 
 const emptyUpgrades = (): Record<UpKey, number> => ({ battery: 0, bin: 0, speed: 0, brush: 0, suction: 0, charger: 0 });
 
 export class Game {
+  /** Renderer, frame loop, resizing and adaptive resolution live in the shared engine. */
+  engine: Engine;
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
   world!: World;
@@ -137,10 +133,8 @@ export class Game {
   minimap: HTMLCanvasElement | null = null;
   isTouch: boolean;
 
-  // input
-  keys = new Set<string>();
-  joy = { x: 0, y: 0, active: false };
-  turboTouch = false;
+  // input (keyboard + touch stick)
+  controls: Input;
 
   // run state
   time = 0;
@@ -196,28 +190,29 @@ export class Game {
   devInfBattery = false;
   devFreezeTime = false;
 
-  // roomba physics
-  px = DOCK.x;
-  pz = DOCK.z;
-  vx = 0;
-  vz = 0;
-  yaw = Math.PI;
-  sq = 0;
-  sqv = 0;
-  hop = 0;
-  hopV = 0;
+  // roomba physics: the engine's mover (eased velocity, lean, bouncy substepped collision)
+  mover = new Mover({ radius: ROOMBA_R });
+  /** Squash-and-stretch spring and hop. */
+  squash = new Squash();
+  collision!: CollisionWorld;
   bumpCd = 0;
   blinkT = 2;
-  leanX = 0;
-  leanZ = 0;
+  get px() { return this.mover.x; }
+  set px(v: number) { this.mover.x = v; }
+  get pz() { return this.mover.z; }
+  set pz(v: number) { this.mover.z = v; }
+  get vx() { return this.mover.vx; }
+  set vx(v: number) { this.mover.vx = v; }
+  get vz() { return this.mover.vz; }
+  set vz(v: number) { this.mover.vz = v; }
+  get yaw() { return this.mover.yaw; }
+  set yaw(v: number) { this.mover.yaw = v; }
 
-  // camera
-  trauma = 0;
-  camT = new THREE.Vector3(DOCK.x, 0, DOCK.z);
+  // camera: the engine's leading follow camera with trauma shake and turbo FOV kick
+  cam: FollowCamera;
   introT = 0;
   introStage = 0;
   menuT = 0;
-  fov = 50;
   flashT = 0;
 
   // misc
@@ -225,19 +220,14 @@ export class Game {
   coinMesh: THREE.InstancedMesh;
   ghostSprite: THREE.Sprite;
   arrow: THREE.Group;
-  popups: Popup[] = [];
+  popups: Popups;
   distField!: Int16Array;
   roomTiles: number[][] = ROOMS.map(() => []);
   rng = makeRng(Date.now() & 0xffff);
-  raf = 0;
-  last = 0;
   hudT = 0;
   mapT = 0;
-  slowFrames = 0;
   /** Seconds since the last autosave while playing. */
   autosaveT = 0;
-  pixelRatio: number;
-  disposed = false;
   private tmpV = new THREE.Vector3();
   private tmpM = new THREE.Matrix4();
   private tmpQ = new THREE.Quaternion();
@@ -247,21 +237,25 @@ export class Game {
     this.container = container;
     this.popupLayer = popupLayer;
     this.cb = cb;
-    this.isTouch = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-    this.renderer = new THREE.WebGLRenderer({ antialias: !this.isTouch || window.devicePixelRatio < 2, powerPreference: 'high-performance' });
-    this.pixelRatio = Math.min(window.devicePixelRatio, this.isTouch ? 1.5 : 2);
-    this.renderer.setPixelRatio(this.pixelRatio);
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    container.appendChild(this.renderer.domElement);
-    this.renderer.domElement.style.display = 'block';
-    this.renderer.domElement.style.touchAction = 'none';
-    // Canvas always stretches to fill its container via CSS; the drawing buffer is synced in onResize.
-    this.renderer.domElement.style.width = '100%';
-    this.renderer.domElement.style.height = '100%';
-
-    this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 220);
-    this.dust = new Particles(700, false);
-    this.glow = new Particles(500, true);
+    this.engine = new Engine(container, {
+      update: this.frame,
+      adaptive: () => this.phase === 'playing',
+      onBlur: this.onBlur,
+      fov: 50, near: 0.1, far: 220,
+    });
+    this.isTouch = this.engine.isTouch;
+    this.renderer = this.engine.renderer;
+    this.camera = this.engine.camera;
+    this.cam = new FollowCamera(this.camera, {}, this.engine.syncProjection);
+    this.cam.focus.set(DOCK.x, 0, DOCK.z);
+    this.controls = new Input({
+      capture: () => this.phase === 'playing' || this.phase === 'intro',
+      onKey: this.onKey,
+    });
+    this.popups = new Popups(container, { layer: popupLayer, className: 'cs-popup' });
+    // particles move between level scenes, so buildLevel adds them to each new scene
+    this.dust = this.engine.addParticles(700, false, false);
+    this.glow = this.engine.addParticles(500, true, false);
 
     // coins
     const coinGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.07, 18);
@@ -293,25 +287,8 @@ export class Game {
     this.buildLevel(0);
     this.resetRun();
     this.setRoombaPower(0);
-    this.onResize();
-    window.addEventListener('resize', this.onResize);
-    window.addEventListener('orientationchange', this.onResize);
-    window.visualViewport?.addEventListener('resize', this.onResize);
-    // Mobile browsers can change the viewport (rotation, address bar, in-app webviews) without a
-    // timely window resize, so track the container's actual size directly.
-    if (typeof ResizeObserver !== 'undefined') {
-      this.resizeObs = new ResizeObserver(() => this.onResize());
-      this.resizeObs.observe(this.container);
-    }
-    window.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('keyup', this.onKeyUp);
-    window.addEventListener('blur', this.onBlur);
-    document.addEventListener('visibilitychange', this.onVis);
     window.addEventListener('pagehide', this.onPageHide);
-    // warm up shaders
-    this.renderer.compile(this.world.scene, this.camera);
-    this.last = performance.now();
-    this.raf = requestAnimationFrame(this.loop);
+    this.engine.start(); // warms up shaders, then runs frame() every animation frame
   }
 
   /** Tear down the current building (if any) and build building n in its place. */
@@ -340,6 +317,10 @@ export class Game {
     this.dirt.dustMul = 1 + 0.15 * n;
     this.world = buildWorld(this.dirt.tex, this.grid);
     setMachineLook(this.world.roomba, this.machine);
+    this.engine.scene = this.world.scene;
+    const grid = this.grid;
+    // walls are the grid's non-room tiles; furniture and secret doors are boxes (spliced in place as secrets open)
+    this.collision = { boxes: this.world.boxes, grid: { cols: COLS, rows: ROWS, tile: TILE, solid: (c, r) => grid[r * COLS + c] < 0 } };
     this.dirt.buildMask(this.world.boxes);
     this.roomTiles = ROOMS.map(() => []);
     for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
@@ -390,12 +371,11 @@ export class Game {
     this.curRoom = -1;
     this.explored = ROOMS.map(() => false);
     this.px = DOCK.x; this.pz = DOCK.z; this.vx = 0; this.vz = 0; this.yaw = Math.PI;
-    this.sq = this.sqv = this.hop = this.hopV = 0;
-    this.trauma = 0;
+    this.squash.reset();
+    this.cam.trauma = 0;
     this.dust.clear();
     this.glow.clear();
-    for (const p of this.popups) p.el.remove();
-    this.popups = [];
+    this.popups.clear();
     for (const c of this.coinsList) c.active = false;
     // instant-gratification coins in front of the dock
     this.placeCoin(DOCK.x, DOCK.z - 4.2); this.placeCoin(DOCK.x - 2.5, DOCK.z - 7.7); this.placeCoin(DOCK.x + 2.5, DOCK.z - 11.2);
@@ -418,7 +398,7 @@ export class Game {
     this.nextGhost = 30;
     this.setRoombaPower(1);
     this.snapCamera();
-    this.last = performance.now();
+    this.engine.resetClock();
     this.sfx.dawn();
     this.bootFx();
     const lap = Math.floor(this.level / LEVELS.length);
@@ -432,19 +412,10 @@ export class Game {
   }
 
   dispose() {
-    this.disposed = true;
-    cancelAnimationFrame(this.raf);
-    window.removeEventListener('resize', this.onResize);
-    window.removeEventListener('orientationchange', this.onResize);
-    window.visualViewport?.removeEventListener('resize', this.onResize);
-    this.resizeObs?.disconnect();
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
-    window.removeEventListener('blur', this.onBlur);
-    document.removeEventListener('visibilitychange', this.onVis);
+    this.controls.dispose();
+    this.popups.dispose();
     window.removeEventListener('pagehide', this.onPageHide);
-    this.renderer.dispose();
-    this.renderer.domElement.remove();
+    this.engine.dispose();
   }
 
   // ------------------------------------------------------------ derived stats
@@ -474,7 +445,7 @@ export class Game {
     setMachineLook(this.world.roomba, this.machine);
     this.sfx.buy();
     this.sfx.dawn();
-    this.hopV = 6;
+    this.squash.jump(6);
     this.addTrauma(0.3);
     for (let i = 0; i < 60; i++) {
       const a = (i / 60) * Math.PI * 2;
@@ -514,13 +485,13 @@ export class Game {
   }
 
   pause() { if (this.phase === 'playing' && !this.ending) { this.setPhase('paused'); this.sfx.hum(0, 0); this.autosave(); } }
-  resume() { if (this.phase === 'paused') { this.setPhase('playing'); this.last = performance.now(); } }
+  resume() { if (this.phase === 'paused') { this.setPhase('playing'); this.engine.resetClock(); } }
   openShop() { if (this.phase === 'playing' && this.docked && !this.ending) { this.setPhase('shop'); this.sfx.click(); this.sfx.hum(0, 0); this.pushHud(); } }
   closeShop() { if (this.phase === 'shop') { this.setPhase('playing'); this.sfx.click(); this.autosave(); } }
   toMenu() { this.autosave(); this.cb.onCaption(null); this.resetRun(); this.setRoombaPower(0); this.setPhase('menu'); this.sfx.hum(0, 0); }
   toggleMute() { this.sfx.setMuted(!this.sfx.muted); this.cb.onMute(this.sfx.muted); }
-  setJoystick(x: number, y: number, active: boolean) { this.joy.x = x; this.joy.y = y; this.joy.active = active; }
-  setTurbo(b: boolean) { this.turboTouch = b; }
+  setJoystick(x: number, y: number, active: boolean) { this.controls.setJoystick(x, y, active); }
+  setTurbo(b: boolean) { this.controls.setBoost(b); }
 
   buy(key: UpKey) {
     const def = UPGRADES.find((u) => u.key === key)!;
@@ -737,7 +708,6 @@ export class Game {
     this.undockArmed = false;
     if (run.docked) { this.px = DOCK.x; this.pz = DOCK.z; this.yaw = Math.PI; }
     else { this.px = run.px; this.pz = run.pz; this.yaw = run.yaw; }
-    this.camT.set(this.px, 0, this.pz);
     this.world.roomba.group.position.set(this.px, 0, this.pz);
     this.world.roomba.group.rotation.y = this.yaw;
 
@@ -746,7 +716,7 @@ export class Game {
     this.world.hemi.intensity = 0.8;
     this.snapCamera();
     this.setPhase('playing');
-    this.last = performance.now();
+    this.engine.resetClock();
     this.pushHud();
     this.drawMinimap();
     this.cb.onToast('💾 Shift resumed — welcome back!', 'good');
@@ -772,7 +742,7 @@ export class Game {
     this.world.hemi.intensity = 0.8;
     this.snapCamera();
     this.setPhase('playing');
-    this.last = performance.now();
+    this.engine.resetClock();
     this.cb.onCaption(null);
     setTimeout(() => {
       if (this.phase !== 'playing' && this.phase !== 'paused') return;
@@ -818,7 +788,7 @@ export class Game {
   }
 
   private bootFx() {
-    this.hopV = 4;
+    this.squash.jump(4);
     for (let i = 0; i < 40; i++) {
       const a = (i / 40) * Math.PI * 2;
       this.glow.spawn(this.px, 0.35, this.pz, Math.cos(a) * 5, 0.5, Math.sin(a) * 5, 0.3, 0.9, 1, 0.3, 0.7, 0);
@@ -952,7 +922,7 @@ export class Game {
           sd.nx * (0.25 + Math.random() * 0.35), 0.05 + Math.random() * 0.15, (Math.random() - 0.5) * 0.2, 0.62, 0.58, 0.52, 0.12, 1.6, -0.05);
       }
       // keep pushing into it and something gives
-      const inp = this.input();
+      const inp = this.controls.read();
       const pushing = d < R + 0.3 && inp.m > 0.3 && (cx - this.px) * inp.x + (cz - this.pz) * inp.z > 0.6 * Math.max(d, 1e-3) * inp.m;
       if (pushing) {
         this.secretPush[k] += dt;
@@ -966,40 +936,15 @@ export class Game {
     });
   }
 
-  private resizeObs?: ResizeObserver;
-
-  private onResize = () => {
-    const w = this.container.clientWidth || window.innerWidth;
-    const h = this.container.clientHeight || window.innerHeight;
-    // updateStyle=false: CSS keeps the canvas at 100% of the container, so a stale size never leaves it half-height.
-    this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.updatePointScale();
-  };
-
-  private updatePointScale() {
-    const h = this.renderer.domElement.height;
-    const s = h / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));
-    this.dust.mat.uniforms.uScale.value = s;
-    this.glow.mat.uniforms.uScale.value = s;
-  }
-
-  private onKeyDown = (e: KeyboardEvent) => {
-    const t = e.target as HTMLElement;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-    if (KEYMAP[e.code]) {
-      this.keys.add(KEYMAP[e.code]);
-      if (this.phase === 'playing' || this.phase === 'intro') e.preventDefault();
-    }
-    if (e.repeat) return;
+  /** Non-repeat key presses (driving keys are tracked by the engine's Input). */
+  private onKey = (code: string, e: KeyboardEvent) => {
     if (this.phase === 'intro') { this.skipIntro(); return; }
     if (this.phase === 'tidy') {
       // only deliberate keys skip, so holding a drive key through the cutscene doesn't
       if (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape') { e.preventDefault(); this.skipTidy(); }
       return;
     }
-    switch (e.code) {
+    switch (code) {
       case 'Escape':
       case 'KeyP':
         if (this.phase === 'playing') this.pause();
@@ -1021,26 +966,19 @@ export class Game {
         this.toggleMute();
         break;
       default:
-        if (this.phase === 'shop' && /^Digit[1-6]$/.test(e.code)) {
-          const k = UPGRADES[parseInt(e.code.slice(5), 10) - 1];
+        if (this.phase === 'shop' && /^Digit[1-6]$/.test(code)) {
+          const k = UPGRADES[parseInt(code.slice(5), 10) - 1];
           if (k) this.buy(k.key);
         }
     }
   };
-  private onKeyUp = (e: KeyboardEvent) => { if (KEYMAP[e.code]) this.keys.delete(KEYMAP[e.code]); };
-  private onBlur = () => { this.keys.clear(); this.joy.active = false; this.turboTouch = false; this.pause(); if (this.phase === 'shop') this.autosave(); };
+  /** Window blur or tab hidden (wired through the engine). */
+  private onBlur = () => { this.controls.clear(); this.pause(); if (this.phase === 'shop') this.autosave(); };
   private onPageHide = () => { this.autosave(); };
-  private onVis = () => { if (document.hidden) this.onBlur(); };
 
   // ------------------------------------------------------------ loop
-  private loop = (now: number) => {
-    if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.loop);
-    let dt = (now - this.last) / 1000;
-    this.last = now;
-    if (dt > 0.05) dt = 0.05;
-    if (dt <= 0) dt = 0.001;
-    this.adaptQuality(dt);
+  /** One frame, called by the engine with a clamped dt; the engine renders afterwards. */
+  private frame = (dt: number, nowSec: number) => {
 
     switch (this.phase) {
       case 'menu': this.updateMenu(dt); break;
@@ -1051,38 +989,25 @@ export class Game {
     }
     // animated furniture freezes while paused or shopping, like the rest of the game
     if (this.phase !== 'paused' && this.phase !== 'shop') {
-      this.world.animate(now / 1000, 12 + ((this.time % NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
+      this.world.animate(nowSec, 12 + ((this.time % NIGHT_LENGTH) / NIGHT_LENGTH) * 5);
     }
-    if (this.phase === 'playing') this.tickClocks(now / 1000);
+    if (this.phase === 'playing') this.tickClocks(nowSec);
     this.updateAmbience(dt);
     if (this.phase !== 'paused' && this.phase !== 'shop') {
       const target = this.docked ? this.tmpV.set(DOCK.x, 0.4, DOCK.z + 1.0) : this.tmpV.set(this.px, 0.25, this.pz);
       this.dust.update(dt, target.x, target.y, target.z);
       this.glow.update(dt, this.px, 0.3, this.pz);
       this.updateCoins(dt);
-      this.updatePopups(dt);
+      this.popups.update(dt, this.camera);
     }
     this.updateVisuals(dt);
     this.dirt.upload();
-    this.renderer.render(this.world.scene, this.camera);
 
     this.hudT -= dt;
     if (this.hudT <= 0 && (this.phase === 'playing' || this.phase === 'intro')) { this.hudT = 1 / 12; this.pushHud(); }
     this.mapT -= dt;
     if (this.mapT <= 0) { this.mapT = 0.15; this.drawMinimap(); }
   };
-
-  private adaptQuality(dt: number) {
-    if (this.phase !== 'playing') { this.slowFrames = 0; return; }
-    if (dt > 1 / 42) this.slowFrames++;
-    else this.slowFrames = Math.max(0, this.slowFrames - 0.5);
-    if (this.slowFrames > 90 && this.pixelRatio > 0.8) {
-      this.pixelRatio = Math.max(0.75, this.pixelRatio - 0.25);
-      this.renderer.setPixelRatio(this.pixelRatio);
-      this.onResize();
-      this.slowFrames = 0;
-    }
-  }
 
   private updateMenu(dt: number) {
     this.menuT += dt;
@@ -1103,12 +1028,12 @@ export class Game {
     const items = this.world.mess.filter((m) => m.room === room && !m.tidy);
     if (!items.length) return;
     this.vx = 0; this.vz = 0;
-    this.joy.active = false; this.joy.x = 0; this.joy.y = 0;
+    this.controls.setJoystick(0, 0, false);
     this.sfx.hum(0, 0);
     this.tidy = {
       room, items, idx: 0, t: 0, stage: 'travel',
       camPos: this.camera.position.clone(),
-      look: new THREE.Vector3(this.camT.x, 0, this.camT.z - 0.6),
+      look: new THREE.Vector3(this.cam.focus.x, 0, this.cam.focus.z - 0.6),
       lifted: new Set(), landed: new Set(),
     };
     this.setPhase('tidy');
@@ -1133,7 +1058,7 @@ export class Game {
     this.cb.onCaption(null);
     this.snapCamera();
     this.setPhase('playing');
-    this.last = performance.now();
+    this.engine.resetClock();
     if (this.tidyQueue.length) this.tidyDelay = 0.8;
   }
 
@@ -1163,8 +1088,8 @@ export class Game {
     // camera glides to each item in turn, then back to the roomba
     const wantPos = new THREE.Vector3(), wantLook = new THREE.Vector3();
     if (td.stage === 'return') {
-      wantLook.set(this.camT.x, 0, this.camT.z - 0.6);
-      wantPos.copy(this.gameCamPos(this.camT));
+      wantLook.set(this.cam.focus.x, 0, this.cam.focus.z - 0.6);
+      wantPos.copy(this.cam.positionFor(this.cam.focus));
     } else {
       // pulled back to show the whole room, leaning a little towards the item being put away
       const it = td.items[td.idx];
@@ -1373,7 +1298,7 @@ export class Game {
       this.cb.onCaption('SURPRISE! YOU ARE THE ROOMBA.', true);
       this.sfx.boot();
       this.bootFx();
-      this.trauma = 0.25;
+      this.cam.trauma = 0.25;
     }
     const camEnd = 8.3;
     const u = Math.min(1, t / camEnd);
@@ -1392,62 +1317,21 @@ export class Game {
     if (t > 9.3) {
       const k = Math.min(1, (t - 9.3) / 1.5);
       const s = k * k * (3 - 2 * k);
-      const gp = this.gameCamPos(this.tmpV.set(this.px, 0, this.pz));
+      const gp = this.cam.positionFor(this.tmpV.set(this.px, 0, this.pz));
       pos.lerp(gp, s);
       tgt.lerp(new THREE.Vector3(this.px, 0, this.pz - 0.6), s);
     }
     this.camera.position.copy(pos);
     this.camera.lookAt(tgt);
-    this.applyShake(dt);
+    this.cam.shake(dt);
     if (t > 10.9) this.beginPlay(true);
   }
 
-  private gameCamPos(target: THREE.Vector3) {
-    const a = this.camera.aspect;
-    const k = a < 1 ? 1 + (1 - a) * 0.75 : 1;
-    return new THREE.Vector3(target.x, 11.3 * k, target.z + 7.8 * k);
-  }
+  private snapCamera() { this.cam.snap(this.px, this.pz); }
 
-  private snapCamera() {
-    this.camT.set(this.px, 0, this.pz);
-    this.camera.position.copy(this.gameCamPos(this.camT));
-    this.camera.lookAt(this.camT.x, 0, this.camT.z - 0.6);
-  }
-
-  private applyShake(dt: number) {
-    this.trauma = Math.max(0, this.trauma - dt * 1.7);
-    const s = this.trauma * this.trauma;
-    if (s > 0.0005) {
-      this.camera.position.x += (Math.random() - 0.5) * 1.2 * s;
-      this.camera.position.y += (Math.random() - 0.5) * 0.8 * s;
-      this.camera.position.z += (Math.random() - 0.5) * 1.2 * s;
-      this.camera.rotateZ((Math.random() - 0.5) * 0.08 * s);
-    }
-  }
-
-  private addTrauma(v: number) { this.trauma = Math.min(1, this.trauma + v); }
+  private addTrauma(v: number) { this.cam.addTrauma(v); }
 
   // ------------------------------------------------------------ gameplay
-  private input() {
-    let x = 0, z = 0;
-    if (this.keys.has('l')) x -= 1;
-    if (this.keys.has('r')) x += 1;
-    if (this.keys.has('u')) z -= 1;
-    if (this.keys.has('d')) z += 1;
-    let m = Math.hypot(x, z);
-    if (m > 0) { x /= m; z /= m; m = 1; }
-    if (this.joy.active) {
-      const jm = Math.hypot(this.joy.x, this.joy.y);
-      if (jm > 0.12) {
-        const mag = Math.min(1, (jm - 0.12) / 0.75);
-        x = (this.joy.x / jm) * mag; z = (this.joy.y / jm) * mag; m = mag;
-      }
-    }
-    // whether any drive control is physically held (even if opposite keys cancel out)
-    const held = this.keys.has('l') || this.keys.has('r') || this.keys.has('u') || this.keys.has('d') || this.joy.active;
-    return { x, z, m, held, turbo: this.keys.has('t') || this.turboTouch };
-  }
-
   private updatePlay(dt: number) {
     this.flicker(dt);
     // ending sequences
@@ -1494,8 +1378,8 @@ export class Game {
       if (this.tidyDelay <= 0) { this.startTidy(this.tidyQueue.shift()!); return; }
     }
 
-    const inp = this.input();
-    this.turbo = inp.turbo && inp.m > 0.1 && !this.docked;
+    const inp = this.controls.read();
+    this.turbo = inp.boost && inp.m > 0.1 && !this.docked;
     let removedUnits = 0;
 
     if (this.docked) {
@@ -1538,32 +1422,12 @@ export class Game {
     }
 
     if (!this.docked) {
-      const spd = this.speedMax * (this.turbo ? 1.5 : 1);
-      const tvx = inp.x * spd, tvz = inp.z * spd;
-      const k = 1 - Math.exp(-(inp.m > 0.05 ? 13 : 9) * dt);
-      const ovx = this.vx, ovz = this.vz;
-      this.vx += (tvx - this.vx) * k;
-      this.vz += (tvz - this.vz) * k;
-      // lean from acceleration
-      const ax = (this.vx - ovx) / dt, az = (this.vz - ovz) / dt;
-      const sy = Math.sin(this.yaw), cy = Math.cos(this.yaw);
-      const af = ax * sy + az * cy, as = ax * cy - az * sy;
-      this.leanX += (THREE.MathUtils.clamp(-af * 0.004, -0.14, 0.14) - this.leanX) * Math.min(1, dt * 10);
-      this.leanZ += (THREE.MathUtils.clamp(as * 0.004, -0.14, 0.14) - this.leanZ) * Math.min(1, dt * 10);
-
-      const steps = Math.max(1, Math.ceil((Math.hypot(this.vx, this.vz) * dt) / 0.2));
-      let impact = 0, nx = 0, nz = 0;
-      for (let s = 0; s < steps; s++) {
-        this.px += (this.vx * dt) / steps;
-        this.pz += (this.vz * dt) / steps;
-        const r = this.collide();
-        if (r.impact > impact) { impact = r.impact; nx = r.nx; nz = r.nz; }
-      }
+      // ease toward the stick, lean, move in substeps, bounce off walls and furniture, turn to face travel
+      this.mover.o.maxSpeed = this.speedMax;
+      const hit = this.mover.update(dt, inp.x, inp.z, inp.m, this.collision, this.turbo ? 1.5 : 1);
       this.bumpCd -= dt;
-      if (impact > 2.6 && this.bumpCd <= 0) this.bump(impact, nx, nz);
-
-      const sp = Math.hypot(this.vx, this.vz);
-      if (sp > 0.4) this.yaw = lerpAngle(this.yaw, Math.atan2(this.vx, this.vz), Math.min(1, dt * 14));
+      if (hit.impact > 2.6 && this.bumpCd <= 0) this.bump(hit.impact, hit.nx, hit.nz);
+      const sp = this.mover.speed;
 
       // battery
       const frac = Math.min(1, sp / this.speedMax);
@@ -1671,54 +1535,12 @@ export class Game {
     this.followCamera(dt);
   }
 
-  private collide() {
-    const R = ROOMBA_R;
-    let impact = 0, inx = 0, inz = 0;
-    const resolve = (minX: number, maxX: number, minZ: number, maxZ: number) => {
-      const cx = Math.max(minX, Math.min(this.px, maxX));
-      const cz = Math.max(minZ, Math.min(this.pz, maxZ));
-      let dx = this.px - cx, dz = this.pz - cz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 >= R * R) return;
-      let d = Math.sqrt(d2);
-      if (d < 1e-5) {
-        // center inside box: push along minimal axis
-        const l = this.px - minX, r = maxX - this.px, t = this.pz - minZ, b = maxZ - this.pz;
-        const m = Math.min(l, r, t, b);
-        if (m === l) { dx = -1; dz = 0; } else if (m === r) { dx = 1; dz = 0; } else if (m === t) { dx = 0; dz = -1; } else { dx = 0; dz = 1; }
-        d = 0;
-        this.px += dx * (m + R); this.pz += dz * (m + R);
-      } else {
-        dx /= d; dz /= d;
-        this.px += dx * (R - d); this.pz += dz * (R - d);
-      }
-      const vn = this.vx * dx + this.vz * dz;
-      if (vn < 0) {
-        this.vx -= dx * vn * 1.15;
-        this.vz -= dz * vn * 1.15;
-        if (-vn > impact) { impact = -vn; inx = dx; inz = dz; }
-      }
-    };
-    for (let it = 0; it < 2; it++) {
-      const c0 = Math.floor((this.px - R) / TILE), c1 = Math.floor((this.px + R) / TILE);
-      const r0 = Math.floor((this.pz - R) / TILE), r1 = Math.floor((this.pz + R) / TILE);
-      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-        if (r < 0 || c < 0 || r >= ROWS || c >= COLS || this.grid[r * COLS + c] < 0) resolve(c * TILE, (c + 1) * TILE, r * TILE, (r + 1) * TILE);
-      }
-      for (const b of this.world.boxes) {
-        if (this.px + R < b.minX || this.px - R > b.maxX || this.pz + R < b.minZ || this.pz - R > b.maxZ) continue;
-        resolve(b.minX, b.maxX, b.minZ, b.maxZ);
-      }
-    }
-    return { impact, nx: inx, nz: inz };
-  }
-
   private bump(impact: number, nx: number, nz: number) {
     this.bumpCd = 0.22;
     const k = Math.min(1, impact / 9);
     this.addTrauma(0.12 + k * 0.35);
     this.sfx.bump(k);
-    this.sqv -= 2 + k * 5;
+    this.squash.squash(-(2 + k * 5));
     const cx = this.px - nx * ROOMBA_R, cz = this.pz - nz * ROOMBA_R;
     for (let i = 0; i < 6 + k * 14; i++) {
       const a = Math.atan2(nz, nx) + (Math.random() - 0.5) * 2.2;
@@ -1878,14 +1700,14 @@ export class Game {
     this.battery = this.batteryMax;
     this.warned30 = this.warned12 = false;
     this.vx = this.vz = 0;
-    this.trauma = 0;
+    this.cam.trauma = 0;
     this.setRoombaPower(1);
     this.sfx.unlock();
     this.sfx.boot();
     this.bootFx();
     this.cb.onCaption(null);
     this.setPhase('playing');
-    this.last = performance.now();
+    this.engine.resetClock();
     this.autosaveT = AUTOSAVE_EVERY - 1;
     this.pushHud();
     this.cb.onToast(`🔋 Recharged for ${cost}🪙 — back to work!`, 'good');
@@ -1969,26 +1791,14 @@ export class Game {
   }
 
   private followCamera(dt: number) {
-    const lead = 0.28;
-    const tx = this.px + this.vx * lead, tz = this.pz + this.vz * lead;
-    const k = 1 - Math.exp(-6 * dt);
-    this.camT.x += (tx - this.camT.x) * k;
-    this.camT.z += (tz - this.camT.z) * k;
-    const gp = this.gameCamPos(this.camT);
+    this.cam.track(dt, this.px, this.pz, this.vx, this.vz, this.turbo);
     if (this.ending === 'battery') {
+      // dying: sink in toward the roomba
       const z = 1 - Math.max(0, this.endTimer / 1.8);
-      gp.lerp(new THREE.Vector3(this.px, 5, this.pz + 4), z * 0.6);
+      this.camera.position.lerp(this.tmpV.set(this.px, 5, this.pz + 4), z * 0.6);
+      this.cam.lookAtFocus();
     }
-    this.camera.position.copy(gp);
-    this.camera.lookAt(this.camT.x, 0, this.camT.z - 0.6);
-    const tf = 50 + (this.turbo ? 7 : 0);
-    if (Math.abs(this.fov - tf) > 0.01) {
-      this.fov += (tf - this.fov) * Math.min(1, dt * 5);
-      this.camera.fov = this.fov;
-      this.camera.updateProjectionMatrix();
-      this.updatePointScale();
-    }
-    this.applyShake(dt);
+    this.cam.shake(dt);
     if (this.turbo && Math.random() < 0.6) {
       const a = this.yaw + Math.PI + (Math.random() - 0.5) * 0.8;
       this.glow.spawn(this.px + Math.sin(a) * 0.5, 0.15, this.pz + Math.cos(a) * 0.5, Math.sin(a) * 2, 0.3, Math.cos(a) * 2, 0.4, 0.8, 1, 0.16, 0.3, 0);
@@ -1999,22 +1809,8 @@ export class Game {
   private updateVisuals(dt: number) {
     const r = this.world.roomba;
     const playing = this.phase === 'playing';
-    if (playing || this.phase === 'intro') {
-      // squash spring
-      this.sqv += (-this.sq * 170 - this.sqv * 11) * dt;
-      this.sq += this.sqv * dt;
-      this.sq = THREE.MathUtils.clamp(this.sq, -0.35, 0.35);
-      // hop
-      this.hopV -= 22 * dt;
-      this.hop += this.hopV * dt;
-      if (this.hop < 0) { if (this.hopV < -3) { this.sqv -= this.hopV * 0.6; } this.hop = 0; this.hopV = 0; }
-    }
-    r.group.position.set(this.px, this.hop, this.pz);
-    r.group.rotation.y = this.yaw;
-    const s = this.sq;
-    r.body.scale.set(1 - s * 0.6, 1 + s * 1.2, 1 - s * 0.6);
-    r.body.rotation.x = this.leanX;
-    r.body.rotation.z = this.leanZ;
+    if (playing || this.phase === 'intro') this.squash.update(dt);
+    poseBody(r.group, r.body, this.mover, this.squash);
     const t = performance.now() / 1000;
     if (r.machine >= 4) r.body.position.y = 0.2 + Math.sin(t * 3) * 0.04; // the hover cleaner floats
     if (r.beacon) {
@@ -2090,31 +1886,9 @@ export class Game {
     this.coinMesh.instanceMatrix.needsUpdate = true;
   }
 
+  /** Floating text above the roomba. */
   popup(text: string, color: string, life = 1, scale = 1) {
-    if (this.popups.length > 22) { const p = this.popups.shift()!; p.el.remove(); }
-    const el = document.createElement('div');
-    el.className = 'cs-popup';
-    el.textContent = text;
-    el.style.color = color;
-    el.style.fontSize = `${Math.round(22 * scale)}px`;
-    this.popupLayer.appendChild(el);
-    this.popups.push({ el, x: this.px, y: 1.2, z: this.pz, age: 0, life });
-  }
-
-  private updatePopups(dt: number) {
-    const w = this.renderer.domElement.clientWidth, h = this.renderer.domElement.clientHeight;
-    for (let i = this.popups.length - 1; i >= 0; i--) {
-      const p = this.popups[i];
-      p.age += dt;
-      if (p.age >= p.life) { p.el.remove(); this.popups.splice(i, 1); continue; }
-      this.tmpV.set(p.x, p.y, p.z).project(this.camera);
-      const sx = (this.tmpV.x * 0.5 + 0.5) * w;
-      const sy = (-this.tmpV.y * 0.5 + 0.5) * h - p.age * 70;
-      const k = p.age / p.life;
-      const pop = p.age < 0.12 ? 0.6 + (p.age / 0.12) * 0.6 : 1.2 - Math.min(0.2, (p.age - 0.12) * 1.5);
-      p.el.style.transform = `translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px) translate(-50%, -50%) scale(${pop.toFixed(3)})`;
-      p.el.style.opacity = String(k > 0.7 ? (1 - k) / 0.3 : 1);
-    }
+    this.popups.spawn(text, this.px, 1.2, this.pz, color, life, scale);
   }
 
   // ------------------------------------------------------------ HUD + minimap
@@ -2248,10 +2022,3 @@ const TIDY_DIR = new THREE.Vector3(0, 1, 0.5).normalize();
 
 /** Distance from the dock centre at which the ring grabs the roomba (ring's outer edge is 1.22). */
 const DOCK_CAPTURE_R = 1.3;
-
-function lerpAngle(a: number, b: number, t: number) {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return a + d * t;
-}
