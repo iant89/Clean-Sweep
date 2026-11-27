@@ -218,6 +218,9 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
   const canEnter = useMemo(() => qualifies(info.score), [info]);
   const [name, setName] = useState(lastName());
   const [saved, setSaved] = useState<number | null>(null);
+  // while a recharge is on offer the run isn't really over, so the score can only be recorded after declining it
+  const [declined, setDeclined] = useState(false);
+  const canRevive = info.reason === 'battery' && info.reviveCost > 0 && !declined;
   const [scores, setScores] = useState(loadScores());
 
   useEffect(() => {
@@ -270,7 +273,17 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Coins</div><div className="font-black text-amber-200">{info.coinsEarned}</div></div>
           </div>
 
-          {canEnter && saved === null && (
+          {canEnter && saved === null && canRevive && (
+            <button
+              type="button"
+              onClick={() => setDeclined(true)}
+              className="text-xs font-bold text-amber-200/80 bg-amber-300/10 border border-amber-300/30 rounded-xl px-3 py-2 hover:bg-amber-300/20"
+            >
+              🏆 High score! End the run here and record it instead of recharging
+            </button>
+          )}
+
+          {canEnter && saved === null && !canRevive && (
             <form
               className="flex gap-2 items-center bg-amber-300/10 border border-amber-300/30 rounded-xl p-2"
               onSubmit={(e) => { e.preventDefault(); save(); }}
@@ -299,14 +312,14 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
           </div>
 
           {info.reason === 'battery' && (
-            info.reviveCost > 0 ? (
+            canRevive ? (
               <button onClick={onRevive} className="btn-gold rounded-xl py-3 font-black tracking-widest flex flex-col items-center">
                 <span className="text-lg">🔋 RECHARGE & KEEP PLAYING</span>
                 <span className="text-xs font-bold opacity-75 tracking-normal">
                   Costs {info.reviveCost.toLocaleString()} 🪙 of your {info.coins.toLocaleString()} · score and progress kept
                 </span>
               </button>
-            ) : (
+            ) : info.reviveCost === 0 && (
               <div className="text-center text-xs text-amber-100/50 bg-white/5 rounded-xl px-3 py-2">
                 🔋 Recharging to keep playing costs at least {REVIVE_MIN} 🪙 — you have {info.coins.toLocaleString()}.
               </div>
