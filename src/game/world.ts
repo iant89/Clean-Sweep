@@ -10,6 +10,21 @@ export interface CutUniforms { uRoomba: { value: THREE.Vector3 }; uCut: { value:
 
 export function buildGrid() {
   const g = new Int8Array(COLS * ROWS).fill(-1);
+  if (LEVEL.map) {
+    // drawn as text: an upper-case letter is that room's floor, lower-case is a doorway belonging to it
+    const idx = new Map(ROOMS.map((r, i) => [r.key, i]));
+    LEVEL.map.forEach((row, r) => {
+      for (let c = 0; c < COLS; c++) {
+        const ch = row[c];
+        if (ch && ch !== '#') g[r * COLS + c] = idx.get(ch.toUpperCase()) ?? -1;
+      }
+    });
+    for (const [c0, r0, w, h, key] of DOORS) {
+      const id = idx.get(key) ?? -1;
+      for (let y = r0; y < r0 + h; y++) for (let x = c0; x < c0 + w; x++) g[y * COLS + x] = id;
+    }
+    return g;
+  }
   ROOMS.forEach((r, i) => {
     const [c0, r0, w, h] = r.rect;
     for (let y = r0; y < r0 + h; y++) for (let x = c0; x < c0 + w; x++) g[y * COLS + x] = i;
@@ -268,7 +283,8 @@ function globeTexture() {
 }
 export const makeBlobTexture = blobTexture;
 
-function floorTexture(grid: Int8Array) {
+/** grid: as the player first sees it (secret doorways closed), for wall shading; full: every room's real tiles. */
+function floorTexture(grid: Int8Array, full: Int8Array) {
   const S = 16;
   const W = WORLD_W * S, H = WORLD_H * S;
   const c = document.createElement('canvas');
@@ -358,14 +374,18 @@ function floorTexture(grid: Int8Array) {
   };
 
   ROOMS.forEach((room, ri) => {
-    const [c0, r0, w, h] = room.rect;
+    // clip to exactly this room's tiles (rooms can be L-shaped), and pattern over their bounding box
+    let cMin = COLS, rMin = ROWS, cMax = -1, rMax = -1;
     g.save();
     g.beginPath();
-    g.rect(c0 * TILE * S, r0 * TILE * S, w * TILE * S, h * TILE * S);
-    for (const [dc, dr, dw, dh, key] of DOORS) {
-      if (key === room.key) g.rect(dc * TILE * S, dr * TILE * S, dw * TILE * S, dh * TILE * S);
+    for (let r = 0; r < ROWS; r++) for (let cc = 0; cc < COLS; cc++) {
+      if (full[r * COLS + cc] !== ri) continue;
+      g.rect(cc * TILE * S, r * TILE * S, TILE * S, TILE * S);
+      cMin = Math.min(cMin, cc); cMax = Math.max(cMax, cc); rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
     }
+    if (cMax < 0) { g.restore(); return; }
     g.clip();
+    const c0 = cMin, r0 = rMin, w = cMax - cMin + 1, h = rMax - rMin + 1;
     // bounding box incl doors
     const x0 = (c0 - 1) * TILE, z0 = (r0 - 1) * TILE, x1 = (c0 + w + 1) * TILE, z1 = (r0 + h + 1) * TILE;
     switch (room.floor) {
@@ -685,7 +705,7 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
   // the floor texture treats the secret doorways as walls, so their wall-edge shading gives nothing away
   const closedGrid = grid.slice();
   for (const [c, r] of SECRET_DOORS) closedGrid[r * COLS + c] = -1;
-  const floorTex = floorTexture(closedGrid);
+  const floorTex = floorTexture(closedGrid, grid);
   const floorMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60, specular: 0x3a3a3a });
   floorMat.onBeforeCompile = (shader) => {
     shader.uniforms.uFloor = { value: floorTex };

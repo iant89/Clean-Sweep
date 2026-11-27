@@ -793,7 +793,7 @@ export class Game {
     for (let k = 0; k < 40; k++) {
       const x = (c0 + 0.3 + this.rng() * (w - 0.6)) * TILE;
       const z = (r0 + 0.3 + this.rng() * (h - 0.6)) * TILE;
-      if (this.dirt.reachable(x, z) && this.dirt.reachable(x + 0.6, z) && this.dirt.reachable(x - 0.6, z) && this.dirt.reachable(x, z + 0.6) && this.dirt.reachable(x, z - 0.6)) {
+      if (this.grid[Math.floor(z / TILE) * COLS + Math.floor(x / TILE)] === room && this.dirt.reachable(x, z) && this.dirt.reachable(x + 0.6, z) && this.dirt.reachable(x - 0.6, z) && this.dirt.reachable(x, z + 0.6) && this.dirt.reachable(x, z - 0.6)) {
         this.placeCoin(x, z);
         return;
       }
