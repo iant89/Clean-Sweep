@@ -152,22 +152,51 @@ export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, mut
   );
 }
 
-/** Current machine, and the next one: locked until every upgrade is maxed. */
-function MachinePanel({ hud, onBuyMachine }: { hud: HudState; onBuyMachine: () => void }) {
+/**
+ * The garage: every machine you own (tap one to switch while docked) and the next one to buy,
+ * which unlocks once every upgrade on your newest machine is maxed.
+ */
+function MachinePanel({ hud, onBuyMachine, onSwitch }: { hud: HudState; onBuyMachine: () => void; onSwitch: (i: number) => void }) {
   const cur = MACHINES[hud.machine];
-  const next = MACHINES[hud.machine + 1];
-  const levels = UPGRADES.reduce((n, u) => n + hud.upgrades[u.key], 0);
+  const next = MACHINES[hud.owned];
+  const levels = UPGRADES.reduce((n, u) => n + hud.bestUpgrades[u.key], 0);
   const maxLevels = UPGRADES.reduce((n, u) => n + u.costs.length, 0);
   const can = !!next && hud.allMaxed && hud.coins >= next.price;
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-3">
-      <div className="rounded-xl p-3 border border-cyan-300/30 bg-cyan-300/[0.07] flex gap-3 items-center">
-        <div className="text-3xl w-10 text-center">{cur.icon}</div>
-        <div className="flex-1 min-w-0">
-          <div className="text-[10px] uppercase tracking-widest text-cyan-200/70 font-bold">Machine {hud.machine + 1} of {MACHINES.length}</div>
-          <div className="font-bold text-amber-50 truncate">{cur.name}</div>
-          <div className="text-xs text-amber-100/60">{cur.desc}</div>
+    <div className="mb-3 flex flex-col gap-2.5">
+      <div className="rounded-xl p-3 border border-cyan-300/30 bg-cyan-300/[0.07]">
+        <div className="flex gap-3 items-center">
+          <div className="text-3xl w-10 text-center">{cur.icon}</div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] uppercase tracking-widest text-cyan-200/70 font-bold">Driving · machine {hud.machine + 1} of {MACHINES.length}</div>
+            <div className="font-bold text-amber-50 truncate">{cur.name}</div>
+            <div className="text-xs text-amber-100/60">{cur.desc}</div>
+          </div>
         </div>
+        {hud.owned > 1 && (
+          <div className="mt-2.5 pt-2.5 border-t border-white/10">
+            <div className="text-[10px] uppercase tracking-widest text-cyan-200/70 font-bold mb-1.5">Garage · tap to switch</div>
+            <div className="flex flex-wrap gap-1.5">
+              {MACHINES.slice(0, hud.owned).map((m, i) => (
+                <button
+                  key={m.name}
+                  onClick={() => onSwitch(i)}
+                  disabled={i === hud.machine}
+                  title={m.name}
+                  className={`rounded-lg px-2.5 py-1.5 text-xs font-bold flex items-center gap-1.5 border transition-all ${
+                    i === hud.machine
+                      ? 'bg-cyan-300/25 border-cyan-200/70 text-cyan-50'
+                      : 'btn-ghost border-white/15 text-amber-50 hover:border-cyan-200/50 active:scale-95'
+                  }`}
+                >
+                  <span className="text-base">{m.icon}</span>
+                  <span>{m.name}</span>
+                  {m.mopR > 0 && <span className="text-[10px] opacity-70" title="Leaves a wet sheen on tile floors">💧</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {next ? (
         <button
@@ -182,21 +211,21 @@ function MachinePanel({ hud, onBuyMachine }: { hud: HudState; onBuyMachine: () =
             <div className="text-[10px] uppercase tracking-widest text-fuchsia-200/80 font-bold">Next machine</div>
             <div className="font-bold text-amber-50 truncate">{next.name}</div>
             <div className="text-xs text-amber-100/60">
-              {hud.allMaxed ? next.desc : `Max every upgrade to unlock (${levels}/${maxLevels})`}
+              {hud.allMaxed ? next.desc : `Max every upgrade on your ${MACHINES[hud.owned - 1].name} to unlock (${levels}/${maxLevels})`}
             </div>
           </div>
           <div className={`font-black text-sm whitespace-nowrap ${can ? 'text-amber-200' : 'text-red-300/80'}`}>🪙{next.price}</div>
         </button>
       ) : (
         <div className="rounded-xl p-3 border border-emerald-300/30 bg-emerald-400/10 flex items-center justify-center text-sm font-bold text-emerald-200">
-          🏆 The best machine money can buy
+          🏆 You own every machine money can buy
         </div>
       )}
     </div>
   );
 }
 
-export function Shop({ hud, onBuy, onBuyMachine, onClose, isTouch }: { hud: HudState; onBuy: (k: UpKey) => void; onBuyMachine: () => void; onClose: () => void; isTouch: boolean }) {
+export function Shop({ hud, onBuy, onBuyMachine, onSwitchMachine, onClose, isTouch }: { hud: HudState; onBuy: (k: UpKey) => void; onBuyMachine: () => void; onSwitchMachine: (i: number) => void; onClose: () => void; isTouch: boolean }) {
   return (
     <div className="absolute inset-0 bg-black/65 flex items-center justify-center p-3 fade-in overflow-y-auto" style={{ backdropFilter: 'blur(3px)' }}>
       <div className="panel rounded-2xl p-4 sm:p-6 w-full max-w-2xl big-in my-auto">
@@ -210,7 +239,7 @@ export function Shop({ hud, onBuy, onBuyMachine, onClose, isTouch }: { hud: HudS
             <span className="font-black text-xl text-amber-200 tabular-nums">{hud.coins}</span>
           </div>
         </div>
-        <MachinePanel hud={hud} onBuyMachine={onBuyMachine} />
+        <MachinePanel hud={hud} onBuyMachine={onBuyMachine} onSwitch={onSwitchMachine} />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {UPGRADES.map((u, i) => {
             const lvl = hud.upgrades[u.key];

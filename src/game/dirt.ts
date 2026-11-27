@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLS, DH, DPU, DW, ROOMS, TILE } from './constants';
+import { COLS, DH, DPU, DW, ROOMS, RUGS, TILE } from './constants';
 
 export type Rng = () => number;
 export function makeRng(seed: number): Rng {
@@ -38,6 +38,14 @@ export class DirtMap {
   total = new Float64Array(ROOMS.length);
   tex: THREE.DataTexture;
   dirty = false;
+  /** How wet each texel of floor is (255 = just mopped), drying back to 0. */
+  wet = new Uint8Array(DW * DH);
+  wetTex: THREE.DataTexture;
+  wetDirty = false;
+  /** 1 where the floor is tile (marble, checker, terracotta) and no rug: the only places a mop leaves a sheen. */
+  tileMask = new Uint8Array(DW * DH);
+  private wetCount = 0;
+  private dryT = 0;
   touched = 0; // bitmask of rooms touched in last clean()
   /** Rooms that count towards the manor totals (secret rooms join once they're found). */
   counted = ROOMS.map((r) => !r.secret);
@@ -50,6 +58,11 @@ export class DirtMap {
     this.tex.minFilter = THREE.LinearFilter;
     this.tex.generateMipmaps = false;
     this.tex.needsUpdate = true;
+    this.wetTex = new THREE.DataTexture(this.wet, DW, DH, THREE.RedFormat, THREE.UnsignedByteType);
+    this.wetTex.magFilter = THREE.LinearFilter;
+    this.wetTex.minFilter = THREE.LinearFilter;
+    this.wetTex.generateMipmaps = false;
+    this.wetTex.needsUpdate = true;
   }
 
   /** Build reachable mask + room ids. boxes are collision boxes (texels inside are unreachable). */
@@ -74,6 +87,14 @@ export class DirtMap {
         else if (lz < margin && g[(r - 1) * COLS + c] < 0) ok = 0;
         else if (lz > TILE - margin && g[(r + 1) * COLS + c] < 0) ok = 0;
         this.mask[idx] = ok;
+      }
+    }
+    // tile floors (minus rugs) are where mopping leaves a wet sheen
+    const tiled = ROOMS.map((r) => r.floor === 'marble' || r.floor === 'checker' || r.floor === 'terracotta');
+    for (let k = 0; k < DW * DH; k++) { const id = this.room[k]; this.tileMask[k] = id >= 0 && tiled[id] ? 1 : 0; }
+    for (const [x0, z0, x1, z1] of RUGS) {
+      for (let j = Math.max(0, Math.floor(z0 * DPU)); j < Math.min(DH, Math.ceil(z1 * DPU)); j++) {
+        for (let i = Math.max(0, Math.floor(x0 * DPU)); i < Math.min(DW, Math.ceil(x1 * DPU)); i++) this.tileMask[j * DW + i] = 0;
       }
     }
     const m = 0.12;
@@ -271,6 +292,50 @@ export class DirtMap {
     return removed;
   }
 
+  /** Leave a freshly-mopped wet patch (tile floors only), soft at the edges. */
+  mop(x: number, z: number, rad: number) {
+    const i0 = Math.max(0, Math.floor((x - rad) * DPU)), i1 = Math.min(DW - 1, Math.ceil((x + rad) * DPU));
+    const j0 = Math.max(0, Math.floor((z - rad) * DPU)), j1 = Math.min(DH - 1, Math.ceil((z + rad) * DPU));
+    for (let j = j0; j <= j1; j++) {
+      const dz = (j + 0.5) / DPU - z;
+      for (let i = i0; i <= i1; i++) {
+        const idx = j * DW + i;
+        if (!this.tileMask[idx]) continue;
+        const dx = (i + 0.5) / DPU - x;
+        const d = Math.sqrt(dx * dx + dz * dz) / rad;
+        if (d >= 1) continue;
+        const v = Math.round(255 * Math.min(1, (1 - d) * 3));
+        if (v > this.wet[idx]) { if (!this.wet[idx]) this.wetCount++; this.wet[idx] = v; this.wetDirty = true; }
+      }
+    }
+  }
+
+  /** Evaporate: a fully wet patch takes `seconds` to dry. Runs in coarse steps to keep it cheap. */
+  dry(dt: number, seconds = 30) {
+    if (!this.wetCount) return;
+    this.dryT += dt;
+    if (this.dryT < 0.25) return;
+    const step = Math.max(1, Math.round((255 * this.dryT) / seconds));
+    this.dryT = 0;
+    const w = this.wet;
+    let n = 0;
+    for (let k = 0; k < w.length; k++) {
+      const v = w[k];
+      if (!v) continue;
+      w[k] = v > step ? v - step : 0;
+      if (w[k]) n++;
+    }
+    this.wetCount = n;
+    this.wetDirty = true;
+  }
+
+  /** Everything dries at once (new building / new run). */
+  clearWet() {
+    this.wet.fill(0);
+    this.wetCount = 0;
+    this.wetDirty = true;
+  }
+
   wipeRoom(rid: number) {
     const d = this.data, rm = this.room;
     for (let k = 0; k < d.length; k++) if (rm[k] === rid && d[k]) d[k] = 0;
@@ -300,6 +365,10 @@ export class DirtMap {
     if (this.dirty) {
       this.tex.needsUpdate = true;
       this.dirty = false;
+    }
+    if (this.wetDirty) {
+      this.wetTex.needsUpdate = true;
+      this.wetDirty = false;
     }
   }
 }

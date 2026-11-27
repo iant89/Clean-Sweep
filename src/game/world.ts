@@ -726,7 +726,8 @@ export interface World {
   animate(t: number, hours: number): void;
 }
 
-export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
+/** wetTex: how freshly mopped each bit of floor is (see DirtMap.wet). */
+export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array, wetTex: THREE.Texture): World {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x07050a);
   scene.fog = new THREE.Fog(0x07050a, 24, 70);
@@ -788,6 +789,7 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
   floorMat.onBeforeCompile = (shader) => {
     shader.uniforms.uFloor = { value: floorTex };
     shader.uniforms.uDirt = { value: dirtTex };
+    shader.uniforms.uWet = { value: wetTex };
     shader.uniforms.uWorld = { value: new THREE.Vector2(WORLD_W, WORLD_H) };
     shader.vertexShader = 'uniform vec2 uWorld;\nvarying vec2 vDUv;\nvarying vec2 vDW;\n' + shader.vertexShader.replace(
       '#include <begin_vertex>',
@@ -798,6 +800,7 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
     );
     shader.fragmentShader = `uniform sampler2D uFloor;
 uniform sampler2D uDirt;
+uniform sampler2D uWet;
 varying vec2 vDUv;
 varying vec2 vDW;
 float dh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -814,10 +817,20 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         float dirtA = smoothstep(0.02, 0.5, dd) * (0.82 + 0.18 * n2);
         vec3 mud = mix(vec3(0.13, 0.085, 0.045), vec3(0.29, 0.2, 0.11), n1 * 0.6 + n2 * 0.4);
         mud *= 0.75 + 0.5 * dd;
-        diffuseColor.rgb = mix(diffuseColor.rgb, mud, dirtA);`,
+        diffuseColor.rgb = mix(diffuseColor.rgb, mud, dirtA);
+        // freshly mopped tile: darker, a touch cooler and glossy; the edge dries back unevenly
+        float ww = texture2D(uWet, vDUv).r;
+        float wetA = smoothstep(0.08 + 0.3 * dn(vDW * 1.7), 0.55, ww) * (1.0 - dirtA);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.55, 0.58, 0.66), wetA);`,
       )
       .replace('#include <specularmap_fragment>', `#include <specularmap_fragment>
-        specularStrength *= (1.0 - dirtA);`);
+        specularStrength *= (1.0 - dirtA);
+        specularStrength = mix(specularStrength, 3.6, wetA);`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        // faint cool sheen with mop streaks, so wet tile reads even away from the lights
+        totalEmissiveRadiance += vec3(0.05, 0.075, 0.11) * wetA * (0.55 + 0.45 * dn(vec2(vDW.x * 0.6, vDW.y * 7.0)));`)
+      .replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
+        material.specularShininess = mix(material.specularShininess, 140.0, wetA);`);
   };
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W, WORLD_H), floorMat);
   floor.rotation.x = -Math.PI / 2;

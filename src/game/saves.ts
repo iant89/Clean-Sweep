@@ -53,6 +53,8 @@ export interface RunSnapshot {
   up: Record<UpKey, number>;
   /** Cleaning machine (older saves: the robo vacuum). */
   machine?: number;
+  /** Upgrade levels of every machine owned (older saves: rebuilt from machine + up). */
+  garage?: Record<UpKey, number>[];
   mult: number;
   comboTime: number;
   comboTimer: number;
