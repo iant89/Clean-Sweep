@@ -133,6 +133,7 @@ export default function App() {
           minimapRef={minimapRef}
           onPause={() => game?.pause()}
           onShop={() => game?.openShop()}
+          onNextLevel={() => game?.nextLevel()}
           onMute={() => game?.toggleMute()}
           muted={muted}
           isTouch={isTouch}

@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import {
-  CLEAR_THRESHOLD, COLS, DOCK, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey, WALL_H,
+  CLEAR_THRESHOLD, COLS, DOCK, LEVEL, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey, WALL_H, setLevel,
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
+import { LEVELS } from './levels';
 import { buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Particles } from './particles';
 import { Sfx } from './audio';
@@ -45,6 +46,11 @@ export interface HudState {
   homeHint: boolean;
   secretsFound: number;
   secretsTotal: number;
+  levelName: string;
+  /** 1-based building number. */
+  levelNum: number;
+  /** Name of the next building once this one is done, else null. */
+  nextLevel: string | null;
 }
 
 export interface GameOverInfo {
@@ -60,6 +66,10 @@ export interface GameOverInfo {
   coins: number;
   /** Nights fully survived (dawns reached) this run. */
   nights: number;
+  /** Building reached (1-based) and its name / room count. */
+  levelNum: number;
+  levelName: string;
+  roomsTotal: number;
   /** Coins it costs to recharge and keep playing after the battery dies, or 0 if you can't afford it. */
   reviveCost: number;
 }
@@ -88,7 +98,7 @@ export interface GameCallbacks {
 interface Coin { x: number; z: number; active: boolean; phase: number }
 interface Popup { el: HTMLDivElement; x: number; y: number; z: number; age: number; life: number }
 export type DevCheat =
-  | 'secrets'
+  | 'secrets' | 'nextLevel'
   | 'coins100' | 'coins1000' | 'battery' | 'infBattery' | 'emptyBin' | 'maxUpgrades'
   | 'cleanRoom' | 'cleanAll' | 'ghost' | 'hour' | 'dawn' | 'freezeTime' | 'dock';
 
@@ -106,9 +116,13 @@ const emptyUpgrades = (): Record<UpKey, number> => ({ battery: 0, bin: 0, speed:
 export class Game {
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
-  world: World;
-  dirt: DirtMap;
-  grid: Int8Array;
+  world!: World;
+  dirt!: DirtMap;
+  grid!: Int8Array;
+  /** Building index (0 = Blackwood Manor); counts on past the last building as it loops round. */
+  level = -1;
+  /** Every regular room of this building has been spotless at once, so the next building is open. */
+  levelDone = false;
   dust: Particles;
   glow: Particles;
   sfx = new Sfx();
@@ -206,7 +220,7 @@ export class Game {
   ghostSprite: THREE.Sprite;
   arrow: THREE.Group;
   popups: Popup[] = [];
-  distField: Int16Array;
+  distField!: Int16Array;
   roomTiles: number[][] = ROOMS.map(() => []);
   rng = makeRng(Date.now() & 0xffff);
   raf = 0;
@@ -240,24 +254,8 @@ export class Game {
     this.renderer.domElement.style.height = '100%';
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 220);
-    this.grid = buildGrid();
-    this.dirt = new DirtMap(this.grid);
-    this.world = buildWorld(this.dirt.tex, this.grid);
-    this.dirt.buildMask(this.world.boxes);
-
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const id = this.grid[r * COLS + c];
-      if (id >= 0) this.roomTiles[id].push(r * COLS + c);
-    }
-    this.secretFound = this.world.secrets.map(() => false);
-    this.secretPush = this.world.secrets.map(() => 0);
-    this.secretAnim = this.world.secrets.map(() => 0);
-    for (const sd of this.world.secrets) this.dirt.setTileMask(sd.c, sd.r, false);
-    this.distField = this.bfs();
-
     this.dust = new Particles(700, false);
     this.glow = new Particles(500, true);
-    this.world.scene.add(this.dust.points, this.glow.points);
 
     // coins
     const coinGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.07, 18);
@@ -265,7 +263,6 @@ export class Game {
     this.coinMesh = new THREE.InstancedMesh(coinGeo, new THREE.MeshPhongMaterial({ color: 0xffc43a, emissive: 0x6a4000, shininess: 120, specular: 0xffffff }), 48);
     this.coinMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.coinMesh.frustumCulled = false;
-    this.world.scene.add(this.coinMesh);
     for (let i = 0; i < 48; i++) this.coinsList.push({ x: 0, z: 0, active: false, phase: Math.random() * 6 });
 
     // ghost
@@ -274,7 +271,6 @@ export class Game {
     }));
     this.ghostSprite.scale.set(2.2, 2.2, 1);
     this.ghostSprite.visible = false;
-    this.world.scene.add(this.ghostSprite);
 
     // home arrow
     this.arrow = new THREE.Group();
@@ -287,8 +283,8 @@ export class Game {
     this.arrow.add(cone, shaft);
     this.arrow.renderOrder = 20;
     this.arrow.visible = false;
-    this.world.scene.add(this.arrow);
 
+    this.buildLevel(0);
     this.resetRun();
     this.setRoombaPower(0);
     this.onResize();
@@ -310,6 +306,122 @@ export class Game {
     this.renderer.compile(this.world.scene, this.camera);
     this.last = performance.now();
     this.raf = requestAnimationFrame(this.loop);
+  }
+
+  /** Tear down the current building (if any) and build building n in its place. */
+  private buildLevel(n: number) {
+    const old = this.world;
+    if (old) {
+      old.scene.remove(this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow);
+      const keep = new Set<unknown>([this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow]);
+      const mats = new Set<THREE.Material>();
+      old.scene.traverse((o) => {
+        if (keep.has(o)) return;
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) (Array.isArray(m.material) ? m.material : [m.material]).forEach((x) => mats.add(x));
+      });
+      for (const m of mats) {
+        for (const v of Object.values(m)) if (v instanceof THREE.Texture) v.dispose();
+        m.dispose();
+      }
+      this.dirt.tex.dispose();
+    }
+    setLevel(n);
+    this.level = n;
+    this.grid = buildGrid();
+    this.dirt = new DirtMap(this.grid);
+    this.dirt.dustMul = 1 + 0.15 * n;
+    this.world = buildWorld(this.dirt.tex, this.grid);
+    this.dirt.buildMask(this.world.boxes);
+    this.roomTiles = ROOMS.map(() => []);
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const id = this.grid[r * COLS + c];
+      if (id >= 0) this.roomTiles[id].push(r * COLS + c);
+    }
+    this.cleared = ROOMS.map(() => false);
+    this.clearedOnce = ROOMS.map(() => false);
+    this.explored = ROOMS.map(() => false);
+    this.secretFound = this.world.secrets.map(() => false);
+    this.secretPush = this.world.secrets.map(() => 0);
+    this.secretAnim = this.world.secrets.map(() => 0);
+    for (const sd of this.world.secrets) this.dirt.setTileMask(sd.c, sd.r, false);
+    this.distField = this.bfs();
+    this.bulbs = [];
+    this.tidyQueue = [];
+    this.tidy = null;
+    this.world.scene.add(this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow);
+    if (old) {
+      this.setPhase(this.phase); // re-apply cutaway, fog and ceiling visibility to the new scene
+      this.renderer.compile(this.world.scene, this.camera);
+    }
+  }
+
+  /** Fresh dirt, coins and per-room state for the current building; the roomba waits on its dock. */
+  private resetBuilding() {
+    for (const m of this.world.mess) this.world.setMessState(m, false);
+    this.tidyQueue = [];
+    this.tidyDelay = 0;
+    this.tidy = null;
+    this.world.secrets.forEach((_, k) => this.setSecret(k, false));
+    this.distField = this.bfs();
+    this.dirt.generate(Math.floor(Math.random() * 1e6));
+    this.binBase = Math.max(70, Math.min(220, this.dirt.totalUnits() * 0.12));
+    this.battery = this.batteryMax;
+    this.bin = 0;
+    this.cleared = ROOMS.map(() => false);
+    this.clearedOnce = ROOMS.map(() => false);
+    this.levelDone = false;
+    this.docked = true;
+    this.dockLock = true;
+    this.undockArmed = false;
+    this.dying = 0;
+    this.warned30 = this.warned12 = this.binWarned = false;
+    this.ghost = null;
+    this.ghostSprite.visible = false;
+    this.manorBonusNight = -1;
+    this.curRoom = -1;
+    this.explored = ROOMS.map(() => false);
+    this.px = DOCK.x; this.pz = DOCK.z; this.vx = 0; this.vz = 0; this.yaw = Math.PI;
+    this.sq = this.sqv = this.hop = this.hopV = 0;
+    this.trauma = 0;
+    this.dust.clear();
+    this.glow.clear();
+    for (const p of this.popups) p.el.remove();
+    this.popups = [];
+    for (const c of this.coinsList) c.active = false;
+    // instant-gratification coins in front of the dock
+    this.placeCoin(DOCK.x, DOCK.z - 4.2); this.placeCoin(DOCK.x - 2.5, DOCK.z - 7.7); this.placeCoin(DOCK.x + 2.5, DOCK.z - 11.2);
+    ROOMS.forEach((r, i) => { for (let n = r.secret ? 5 : 2; n > 0; n--) this.spawnCoin(i); });
+    this.world.roomba.group.position.set(this.px, 0, this.pz);
+    this.world.roomba.group.rotation.y = this.yaw;
+  }
+
+  /** Name of the building after this one. */
+  get nextLevelName() { return LEVELS[(this.level + 1) % LEVELS.length].name; }
+
+  /** Move on to the next building once this one has been made spotless. Score, coins, upgrades and the clock carry over. */
+  nextLevel() {
+    if (this.phase !== 'playing' || !this.levelDone || this.ending) return false;
+    this.cb.onCaption(null);
+    this.buildLevel(this.level + 1);
+    this.resetBuilding();
+    this.mult = 1;
+    this.comboTime = this.comboTimer = 0;
+    this.nextGhost = 30;
+    this.setRoombaPower(1);
+    this.snapCamera();
+    this.last = performance.now();
+    this.sfx.dawn();
+    this.bootFx();
+    const lap = Math.floor(this.level / LEVELS.length);
+    this.cb.onCaption(`🏠 BUILDING ${this.level + 1}: ${LEVEL.name.toUpperCase()}${lap ? ` (ROUND ${lap + 1})` : ''}`, true);
+    setTimeout(() => { if (this.phase === 'playing') this.cb.onCaption(null); }, 2600);
+    setTimeout(() => { if (this.phase === 'playing') this.cb.onToast(LEVEL.blurb, 'info'); }, 2800);
+    this.pushHud();
+    this.drawMinimap();
+    this.autosave();
+    return true;
   }
 
   dispose() {
@@ -420,6 +532,10 @@ export class Game {
       case 'cleanAll':
         for (let i = 0; i < ROOMS.length; i++) if (!this.cleared[i] && this.dirt.counted[i]) this.clearRoom(i);
         break;
+      case 'nextLevel':
+        this.levelDone = true;
+        if (!this.nextLevel()) return null;
+        break;
       case 'secrets': {
         const left = this.world.secrets.map((_, k) => k).filter((k) => !this.secretFound[k]);
         if (!left.length) return 'All secrets already found';
@@ -482,6 +598,8 @@ export class Game {
       tidyQueue,
       dirtTotal: Array.from(this.dirt.total),
       explored: [...this.explored],
+      level: this.level,
+      levelDone: this.levelDone,
       manorBonusNight: this.manorBonusNight,
       secrets: [...this.secretFound],
       dirt: encodeBytes(this.dirt.data),
@@ -495,6 +613,9 @@ export class Game {
       score: Math.round(this.score),
       coins: this.coins,
       roomsCleared: this.roomsCleanNow(),
+      roomsTotal: this.roomCount(),
+      level: this.level,
+      levelName: LEVEL.name,
       overall: this.dirt.overall(),
     };
   }
@@ -518,7 +639,7 @@ export class Game {
   loadGame(run: RunSnapshot) {
     this.sfx.unlock();
     this.cb.onCaption(null);
-    this.resetRun();
+    this.resetRun(run.level ?? 0);
     this.time = run.time;
     this.score = run.score;
     this.coins = run.coins;
@@ -542,6 +663,7 @@ export class Game {
     this.fullHinted = true;
     this.dockHinted = true;
     this.explored = ROOMS.map((_, i) => !!run.explored?.[i]);
+    this.levelDone = run.levelDone ?? ROOMS.every((r, k) => r.secret || this.clearedOnce[k]);
     // older saves didn't track it: assume this night's bonus is taken if the manor is already spotless
     this.manorBonusNight = run.manorBonusNight ?? (ROOMS.every((r, k) => r.secret || this.cleared[k]) ? this.night : -1);
     this.world.secrets.forEach((_, k) => this.setSecret(k, !!run.secrets?.[k]));
@@ -620,15 +742,8 @@ export class Game {
     }, 3200);
   }
 
-  resetRun() {
-    for (const m of this.world.mess) this.world.setMessState(m, false);
-    this.tidyQueue = [];
-    this.tidyDelay = 0;
-    this.tidy = null;
-    this.world.secrets.forEach((_, k) => this.setSecret(k, false));
-    this.distField = this.bfs();
-    this.dirt.generate(Math.floor(Math.random() * 1e6));
-    this.binBase = Math.max(70, Math.min(220, this.dirt.totalUnits() * 0.12));
+  resetRun(level = 0) {
+    if (this.level !== level) this.buildLevel(level);
     this.time = 0;
     this.autosaveT = 0;
     this.score = 0;
@@ -636,43 +751,18 @@ export class Game {
     this.coinsEarned = 0;
     this.coinFrac = 0;
     this.up = emptyUpgrades();
-    this.battery = this.batteryMax;
-    this.bin = 0;
     this.mult = 1;
     this.comboTime = 0;
     this.comboTimer = 0;
-    this.cleared = ROOMS.map(() => false);
-    this.clearedOnce = ROOMS.map(() => false);
     this.clears = 0;
-    this.docked = true;
-    this.dockLock = true;
     this.dockHinted = false;
     this.fullHinted = true;
-    this.dying = 0;
     this.ending = null;
     this.endTimer = 0;
-    this.warned30 = this.warned12 = this.binWarned = false;
-    this.ghost = null;
-    this.ghostSprite.visible = false;
     this.nextGhost = 38;
     this.hourAnnounced = 0;
     this.dawnGlow = 0;
-    this.manorBonusNight = -1;
-    this.curRoom = -1;
-    this.explored = ROOMS.map(() => false);
-    this.px = DOCK.x; this.pz = DOCK.z; this.vx = 0; this.vz = 0; this.yaw = Math.PI;
-    this.sq = this.sqv = this.hop = this.hopV = 0;
-    this.trauma = 0;
-    this.dust.clear();
-    this.glow.clear();
-    for (const p of this.popups) p.el.remove();
-    this.popups = [];
-    for (const c of this.coinsList) c.active = false;
-    // instant-gratification coins in front of the dock
-    this.placeCoin(44, 58.5); this.placeCoin(41.5, 55); this.placeCoin(46.5, 51.5);
-    ROOMS.forEach((r, i) => { for (let n = r.secret ? 5 : 2; n > 0; n--) this.spawnCoin(i); });
-    this.world.roomba.group.position.set(this.px, 0, this.pz);
-    this.world.roomba.group.rotation.y = this.yaw;
+    this.resetBuilding();
   }
 
   private setRoombaPower(p: number) {
@@ -880,6 +970,9 @@ export class Game {
         break;
       case 'KeyR':
         if (this.phase === 'gameover' || this.phase === 'paused') this.startRun(false);
+        break;
+      case 'KeyN':
+        this.nextLevel();
         break;
       case 'KeyM':
         this.toggleMute();
@@ -1611,13 +1704,17 @@ export class Game {
       this.tidyDelay = Math.max(this.tidyDelay, 1.4);
     }
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1.5);
+    if (!ROOMS[i].secret && ROOMS.every((r, k) => r.secret || this.cleared[k]) && !this.levelDone) {
+      this.levelDone = true;
+      setTimeout(() => this.cb.onToast(`🚚 ${this.nextLevelName} is calling — move on whenever you're ready!`, 'good'), 3200);
+    }
     // whole-manor bonus: once per night, so re-cleaning after a ghost visit doesn't pay it again
     if (!ROOMS[i].secret && this.manorBonusNight !== this.night && ROOMS.every((r, k) => r.secret || this.cleared[k])) {
       this.manorBonusNight = this.night;
       this.score += 5000;
       this.coins += 100;
       this.coinsEarned += 100;
-      setTimeout(() => this.cb.onToast('🏆 THE ENTIRE MANOR IS SPOTLESS! +5000', 'big'), 1200);
+      setTimeout(() => this.cb.onToast(`🏆 ${LEVEL.name.toUpperCase()} IS SPOTLESS! +5000`, 'big'), 1200);
     }
   }
 
@@ -1657,6 +1754,9 @@ export class Game {
       bonus,
       coins: this.coins,
       nights: this.night,
+      levelNum: this.level + 1,
+      levelName: LEVEL.name,
+      roomsTotal: this.roomCount(),
       reviveCost: this.ending === 'battery' ? reviveCost(this.coins) : 0,
     });
   }
@@ -1970,6 +2070,9 @@ export class Game {
       roomCleared: this.cleared[rid],
       roomsCleared: this.roomsCleanNow(),
       roomsTotal: this.roomCount(),
+      levelName: LEVEL.name,
+      levelNum: this.level + 1,
+      nextLevel: this.levelDone && !this.ending ? this.nextLevelName : null,
       secretsFound: this.secretFound.filter(Boolean).length,
       secretsTotal: this.secretFound.length,
       docked: this.docked,

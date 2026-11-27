@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  COLS, DOCK, DOORS, FURNITURE, Facing, FurnDef, ROOMS, ROWS, RUGS, SECRET_DOORS, TILE, WALL_H, WORLD_H, WORLD_W,
+  COLS, DOCK, DOORS, FURNITURE, Facing, FurnDef, LEVEL, ROOMS, ROWS, RUGS, SECRET_DOORS, TILE, WALL_H, WORLD_H, WORLD_W,
 } from './constants';
 import { makeRng } from './dirt';
 
@@ -647,8 +647,8 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
     return m;
   };
   const M = {
-    wallpaper: L(0x4a2d3c, { side: THREE.DoubleSide }, true),
-    wainscot: L(0x2e1d14, { side: THREE.DoubleSide }, true),
+    wallpaper: L(LEVEL.walls.paper, { side: THREE.DoubleSide }, true),
+    wainscot: L(LEVEL.walls.wainscot, { side: THREE.DoubleSide }, true),
     cap: L(0x17111a, { side: THREE.DoubleSide }, true),
     trim: L(0x8a6a3a),
     woodDark: L(0x3b2416),
@@ -729,13 +729,11 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   const sb = new SB();
 
   // ---- walls (greedy rect merge)
-  const isFloor = (c: number, r: number) => c >= 0 && r >= 0 && c < COLS && r < ROWS && grid[r * COLS + c] >= 0;
   const need = new Uint8Array(COLS * ROWS);
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
     if (grid[r * COLS + c] >= 0) continue;
-    let n = false;
-    for (let dy = -1; dy <= 1 && !n; dy++) for (let dx = -1; dx <= 1; dx++) if (isFloor(c + dx, r + dy)) { n = true; break; }
-    need[r * COLS + c] = n ? 1 : 0;
+    // every non-floor tile is solid wall, so unused space between rooms reads as thick masonry rather than a pit
+    need[r * COLS + c] = 1;
   }
   const used = new Uint8Array(COLS * ROWS);
   for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
@@ -763,16 +761,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     sb.place(new THREE.PlaneGeometry(w, h), portraits[idx % portraits.length], 0, 2.6, 0.065);
     sb.reset();
   };
-  painting(44, 2, 0, 2.6, 1.9, 0);
-  painting(40, 19, Math.PI / 2, 1.2, 1.5, 1);
-  painting(40, 25, Math.PI / 2, 1.2, 1.5, 2);
-  painting(40, 31.5, Math.PI / 2, 1.2, 1.5, 3);
-  painting(48, 22, -Math.PI / 2, 1.2, 1.5, 4);
-  painting(48, 30, -Math.PI / 2, 1.2, 1.5, 5);
-  painting(36, 36, 0, 1.6, 1.2, 2);
-  painting(52, 36, 0, 1.6, 1.2, 5);
-  painting(2, 33, Math.PI / 2, 1.6, 1.2, 1);
-  painting(86, 48, -Math.PI / 2, 1.6, 1.2, 3);
+  for (const [x, z, ry, w, h, idx] of LEVEL.paintings) painting(x, z, ry, w, h, idx);
   const windowAt = (x: number, z: number, ry: number) => {
     sb.frame(x, z, ry);
     sb.box(M.window, 0, 1.1, 0.03, 1.6, 2.6, 0.04);
@@ -782,12 +771,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     sb.box(M.woodDark, 0, 2.35, 0.07, 1.6, 0.08, 0.06);
     sb.reset();
   };
-  [6, 12, 20, 26].forEach((x) => windowAt(x, 66, Math.PI));
-  [29, 36].forEach((z) => windowAt(86, z, -Math.PI / 2));
-  [37.5, 50.5].forEach((x) => windowAt(x, 64, Math.PI));
-  [56, 66, 78].forEach((x) => windowAt(x, 2, 0));
-  windowAt(2, 47, Math.PI / 2);
-  windowAt(2, 37, Math.PI / 2);
+  for (const [x, z, ry] of LEVEL.windows) windowAt(x, z, ry);
 
   // ---- furniture (fades when blocking the roomba, never cut away)
   // Moving parts are real meshes (not merged into the statics) and are driven by animate().
@@ -1386,7 +1370,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     m.onBeforeCompile = M.flame.onBeforeCompile;
     return m;
   };
-  const chandBulbs = [0, 1, 2, 3].map(bulbMat);
+  const chandBulbs = LEVEL.lights.map(bulbMat);
   const chand = (x: number, z: number, r: number, li: number) => {
     const flame = chandBulbs[li];
     sb.frame(x, z, 0);
@@ -1400,7 +1384,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     }
     sb.reset();
   };
-  chand(44, 50, 1.2, 0); chand(44, 14, 0.7, 1); chand(44, 26, 0.7, 1); chand(20, 12, 1.0, 2); chand(72, 33, 1.2, 3);
+  LEVEL.lights.forEach((l, li) => { for (const [x, z, r] of l.chands) chand(x, z, r, li); });
   sb.build(introGroup);
   scene.add(introGroup);
 
@@ -1425,10 +1409,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     scene.add(l);
     lights.push({ light: l, base: int, bulbs, flaky });
   };
-  pl(44, 3.6, 50, 45, 26, [chandBulbs[0]]);
-  pl(44, 3.4, 18, 22, 20, [chandBulbs[1]]);
-  pl(20, 3.6, 12, 35, 22, [chandBulbs[2]]);
-  pl(72, 3.6, 33, 35, 22, [chandBulbs[3]]);
+  LEVEL.lights.forEach((l, li) => pl(l.x, l.y, l.z, l.int, l.dist, [chandBulbs[li]]));
 
   // ---- secret rooms: a single bare bulb on a cord (visible during play), the oldest bulbs in the house
   const pendants = new THREE.Group();

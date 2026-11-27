@@ -85,7 +85,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
             <button onClick={onContinue} className={`btn-gold ${MENU_BTN}`}>
               <span>▶ CONTINUE SHIFT</span>
               <span className="text-[10px] font-bold opacity-70 tracking-normal tabular-nums">
-                {formatShift(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.roomsCleared}/10 rooms
+                {formatShift(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.levelName ?? 'Blackwood Manor'}
               </span>
             </button>
           )}
@@ -111,6 +111,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
               <li>✨ Get a room to <b>100%</b> for bonus <b className="text-amber-300">coins</b> & points.</li>
               <li>🔋 Battery drains as you drive. 🗑️ A full bin stops cleaning. Return to the <b className="text-emerald-300">dock</b> to charge & empty.</li>
               <li>🛒 Spend coins on upgrades while docked.</li>
+              <li>🚚 Get every room of a building spotless to unlock the <b>next building</b>: a hunting lodge, a grand hotel, and on it goes.</li>
               <li>👻 Beware: something keeps tracking mud back in…</li>
               <li>☀️ Every <b>5:00 AM</b> dawn pays a big bonus, then the curse winds the clock back to midnight and the mud returns. Keep sweeping as long as your battery lasts!</li>
             </ul>
@@ -268,7 +269,7 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
           </div>
           <div className="grid grid-cols-4 gap-2 text-center text-xs">
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Lasted</div><div className="font-black text-amber-200">Night {nightNumber(info.time)}</div><div className="text-[10px] text-amber-100/60">{formatClock(info.time)}</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Rooms</div><div className="font-black text-amber-200">{info.rooms}/10</div></div>
+            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Building</div><div className="font-black text-amber-200">#{info.levelNum}</div><div className="text-[10px] text-amber-100/60 truncate">{info.levelName}</div></div>
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Manor</div><div className="font-black text-amber-200">{Math.round(info.overall * 100)}%</div></div>
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Coins</div><div className="font-black text-amber-200">{info.coinsEarned}</div></div>
           </div>

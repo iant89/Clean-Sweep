@@ -22,6 +22,10 @@ export interface SaveMeta {
   score: number;
   coins: number;
   roomsCleared: number;
+  /** Missing on saves from before buildings had different room counts. */
+  roomsTotal?: number;
+  level?: number;
+  levelName?: string;
   overall: number;
 }
 
@@ -67,6 +71,10 @@ export interface RunSnapshot {
   messTidy: boolean[];
   tidyQueue: number[];
   dirtTotal: number[];
+  /** Building index (older saves: 0, Blackwood Manor). */
+  level?: number;
+  /** This building has been fully cleaned, so the next one is open. */
+  levelDone?: boolean;
   /** Rooms visited (older saves: none). */
   explored?: boolean[];
   /** Night index the whole-manor bonus was last paid in (older saves: missing). */

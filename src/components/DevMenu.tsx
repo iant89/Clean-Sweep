@@ -13,6 +13,7 @@ const ACTIONS: { cmd: DevCheat; label: string; toggle?: 'infBattery' | 'freezeTi
   { cmd: 'cleanRoom', label: '✨ Clean this room' },
   { cmd: 'cleanAll', label: '🏆 Clean all rooms' },
   { cmd: 'secrets', label: '🗝️ Reveal secret rooms' },
+  { cmd: 'nextLevel', label: '🚚 Next building' },
   { cmd: 'ghost', label: '👻 Spawn ghost' },
   { cmd: 'hour', label: '🕐 +1 hour' },
   { cmd: 'dawn', label: '☀️ Skip to dawn' },

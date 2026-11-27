@@ -49,6 +49,7 @@ export default function HUD({
   minimapRef,
   onPause,
   onShop,
+  onNextLevel,
   onMute,
   muted,
   isTouch,
@@ -57,6 +58,7 @@ export default function HUD({
   minimapRef: (c: HTMLCanvasElement | null) => void;
   onPause: () => void;
   onShop: () => void;
+  onNextLevel: () => void;
   onMute: () => void;
   muted: boolean;
   isTouch: boolean;
@@ -131,7 +133,8 @@ export default function HUD({
         <div className="panel rounded-xl p-1.5">
           <canvas ref={minimapRef} className="block w-[120px] sm:w-[176px] h-auto" style={{ imageRendering: 'pixelated', aspectRatio: '44 / 34' }} />
           <div className="text-[9px] sm:text-[10px] text-amber-100/70 text-center mt-1 font-semibold tracking-wide">
-            ROOMS {hud.roomsCleared}/{hud.roomsTotal} · MANOR {Math.round(hud.overall * 100)}%
+            <div className="truncate text-amber-200/90">🏠 {hud.levelNum}. {hud.levelName}</div>
+            ROOMS {hud.roomsCleared}/{hud.roomsTotal} · CLEAN {Math.round(hud.overall * 100)}%
             {hud.secretsFound > 0 && <> · 🗝️ {hud.secretsFound}/{hud.secretsTotal}</>}
           </div>
         </div>
@@ -157,6 +160,12 @@ export default function HUD({
 
       {/* bottom center: dock / hints */}
       <div className="absolute left-1/2 -translate-x-1/2 bottom-[max(1rem,env(safe-area-inset-bottom))] flex flex-col items-center gap-2">
+        {hud.nextLevel && (
+          <button onClick={onNextLevel} className="pointer-events-auto btn-gold rounded-xl px-5 py-2 font-black tracking-wider text-sm sm:text-base flex flex-col items-center leading-tight">
+            <span>🚚 NEXT BUILDING {!isTouch && <span className="opacity-60 text-xs">(N)</span>}</span>
+            <span className="text-[10px] sm:text-xs font-bold opacity-75 tracking-normal">{hud.nextLevel} →</span>
+          </button>
+        )}
         {hud.homeHint && !hud.docked && (
           <div className="panel rounded-full px-4 py-1.5 text-sm font-bold text-orange-200 blink-soft">↩ Follow the arrow back to the dock</div>
         )}

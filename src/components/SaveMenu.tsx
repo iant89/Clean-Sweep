@@ -100,7 +100,7 @@ export function SaveMenu({ mode, inRun, version, onSave, onLoad, onClose }: Save
                     <span className="text-[11px] text-amber-100/40 whitespace-nowrap">{ago(s.date)}</span>
                   </div>
                   <div className="text-xs text-amber-100/60 tabular-nums">
-                    🕐 {formatShift(s.time)} · ⭐ {s.score.toLocaleString()} · 🪙 {s.coins} · 🏠 {s.roomsCleared}/10 · {Math.round(s.overall * 100)}% clean
+                    🕐 {formatShift(s.time)} · ⭐ {s.score.toLocaleString()} · 🪙 {s.coins} · 🏠 {s.levelName ?? 'Blackwood Manor'} {s.roomsCleared}/{s.roomsTotal ?? 10} · {Math.round(s.overall * 100)}% clean
                   </div>
                 </div>
                 <div className="flex gap-1.5 flex-wrap">
