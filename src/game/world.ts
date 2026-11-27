@@ -165,6 +165,10 @@ class SB {
   private e = new THREE.Euler();
   private s = new THREE.Vector3(1, 1, 1);
   private p = new THREE.Vector3();
+  /** Tip-over angle (rad) applied around local X by frame(); cleared in reset(). */
+  tip = 0;
+  /** Vertical lift added to the frame translation so a tipped object rests on the ground. */
+  tipY = 0;
 
   place(g: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0) {
     this.e.set(rx, ry, rz);
@@ -191,9 +195,13 @@ class SB {
   }
   frame(x: number, z: number, ry: number, y = 0) {
     this.m.makeRotationY(ry);
-    this.m.setPosition(x, y, z);
+    if (this.tip) { // tip around local X at the base, before yaw+translation
+      this.tmp.makeRotationX(this.tip);
+      this.m.multiply(this.tmp);
+    }
+    this.m.setPosition(x, y + this.tipY, z);
   }
-  reset() { this.m.identity(); }
+  reset() { this.m.identity(); this.tip = 0; this.tipY = 0; }
   build(parent: THREE.Object3D) {
     for (const [mat, geos] of this.map) {
       const merged = mergeGeometries(geos, false);
@@ -659,7 +667,7 @@ function makeDock(): DockModel {
 export interface Pose { p: THREE.Vector3; q: THREE.Quaternion; s: THREE.Vector3 }
 export interface MessPart { obj: THREE.Object3D; from: Pose; to: Pose; delay: number }
 export interface MessItem {
-  kind: 'tipchair' | 'books' | 'vase' | 'pots' | 'frame';
+  kind: 'books' | 'vase' | 'pots' | 'frame';
   room: number;
   parts: MessPart[];
   messyBoxes: Box[];
@@ -772,11 +780,11 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array, wetTex: THRE
     flame: L(0xffd080, { emissive: 0xffb040 }),
     ember: L(0xff6020, { emissive: 0xff4010 }),
     water: L(0x3a7fa0, { emissive: 0x0a3550 }),
-    window: L(0x24345e, { emissive: 0x1a2a55 }),
+    window: L(0x24345e, { emissive: 0x1a2a55, side: THREE.DoubleSide }),
     lamp: L(0xffe0a0, { emissive: 0xffc060 }),
     globe: L(0x2a6a8a),
   };
-  const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1) }));
+  const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1), side: THREE.DoubleSide }));
   return { M, portraits };
   };
   let { M, portraits } = makeMats(true);
@@ -982,29 +990,6 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     const mx = Math.max(0, sf.hw - margin), mz = Math.max(0, sf.hd - margin);
     return [Math.max(sf.x - mx, Math.min(sf.x + mx, x)), Math.max(sf.z - mz, Math.min(sf.z + mz, z))];
   };
-  const boxesOverlap = (a: Box, b: Box) => a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ;
-  const areaIsFree = (bx: Box, room: number, ignore: Box[]) => {
-    for (const [x, z] of [[bx.minX, bx.minZ], [bx.maxX, bx.minZ], [bx.minX, bx.maxZ], [bx.maxX, bx.maxZ]]) if (roomAt(x, z) !== room) return false;
-    return !boxes.some((b) => !ignore.includes(b) && boxesOverlap(b, bx));
-  };
-  const chairLegs = (x: number, z: number, a: number) => [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]].map(([lx, lz]) => {
-    const [wx, wz] = rotXZ(lx, lz, a);
-    return mkBox(x + wx, z + wz, 0.22, 0.22);
-  });
-  /** Chair made of separate meshes in chair-local space (same shape as chairParts). */
-  const chairGroup = (seatMat: THREE.Material) => {
-    const g = new THREE.Group();
-    const bx = (mat: THREE.Material, cx: number, y0: number, cz: number, w: number, h: number, d: number) => {
-      const m = geoMesh(new THREE.BoxGeometry(w, h, d), mat);
-      m.position.set(cx, y0 + h / 2, cz);
-      g.add(m);
-    };
-    for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) bx(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
-    bx(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
-    bx(seatMat, 0, 0.97, 0.03, 0.8, 0.08, 0.8);
-    bx(M.woodMed, 0, 0.97, -0.42, 0.95, 1.2, 0.1);
-    return g;
-  };
   /** Nearest north/west/east wall spot of the room to hang a fallen painting: [x, z, ry]. */
   const wallSpot = (x: number, z: number): [number, number, number] | null => {
     const room = roomAt(x, z);
@@ -1025,11 +1010,6 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     }
     return best;
   };
-  const roomCenter = (room: number): [number, number] => {
-    const [c0, r0, w, h] = ROOMS[room].rect;
-    return [(c0 + w / 2) * TILE, (r0 + h / 2) * TILE];
-  };
-
   const chairParts = (seatMat: THREE.Material) => {
     for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) sb.box(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
     sb.box(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
@@ -1050,6 +1030,9 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   for (const f of FURNITURE) {
     const a = furnRot(f);
     const w = f.w ?? 1, d = f.d ?? 1;
+    // Fallen / out of place: rotate around local X so the object falls forward onto its front,
+    // lifted by d/2 so it rests on the ground instead of sinking through it.
+    if (f.fallen) { sb.tip = -Math.PI / 2; sb.tipY = d / 2; }
     switch (f.t) {
       case 'table': {
         const h = f.h ?? 1.6;
@@ -1085,48 +1068,13 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         addBox(f.x, f.z, 1.7, 1.7);
         break;
       }
-      case 'chair': {
+      case 'chair':
+      case 'tipchair': { // legacy tipchair → regular chair with fallen forced on
+        if (f.t === 'tipchair') f.fallen = true;
         sb.frame(f.x, f.z, a);
         chairParts(M.red);
         sb.reset();
         legsCollide(f.x, f.z, a, [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]], 0.22);
-        break;
-      }
-      case 'tipchair': {
-        const ang = f.ry != null ? f.ry : rng() * Math.PI * 2;
-        const it = newItem('tipchair', f.x, f.z);
-        const from = frameM(f.x, f.z, ang, 0.48).multiply(new THREE.Matrix4().makeTranslation(0, 0, 1.0)).multiply(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
-        // footprint ~1.0 x 2.1 centered roughly at offset
-        const [ox, oz] = rotXZ(0, 0.05, ang);
-        const ex = Math.abs(Math.cos(ang)) * 0.5 + Math.abs(Math.sin(ang)) * 1.0;
-        const ez = Math.abs(Math.sin(ang)) * 0.5 + Math.abs(Math.cos(ang)) * 1.0;
-        const cx = f.x + ox, cz = f.z + oz;
-        it.messyBoxes.push(mkBox(cx, cz, ex * 2, ez * 2));
-        // stand it back up: tucked in at a nearby table if there's room, otherwise where it fell
-        let px = cx, pz = cz;
-        let look: [number, number] = roomCenter(it.room);
-        const tb = nearestSurf(cx, cz, ['table', 'desk', 'roundtable'], 6);
-        if (tb) {
-          let sx: number, sz: number;
-          if (tb.r) {
-            const a2 = Math.atan2(cz - tb.z, cx - tb.x);
-            sx = tb.x + Math.cos(a2) * (tb.r + 0.85); sz = tb.z + Math.sin(a2) * (tb.r + 0.85);
-            look = [tb.x, tb.z];
-          } else if (Math.max(0, Math.abs(cx - tb.x) - tb.hw) > Math.max(0, Math.abs(cz - tb.z) - tb.hd)) {
-            sx = tb.x + Math.sign(cx - tb.x) * (tb.hw + 0.85);
-            sz = Math.max(tb.z - tb.hd + 0.6, Math.min(tb.z + tb.hd - 0.6, cz));
-            look = [tb.x, sz];
-          } else {
-            sz = tb.z + Math.sign(cz - tb.z) * (tb.hd + 0.85);
-            sx = Math.max(tb.x - tb.hw + 0.6, Math.min(tb.x + tb.hw - 0.6, cx));
-            look = [sx, tb.z];
-          }
-          if (areaIsFree(mkBox(sx, sz, 1.0, 1.0), it.room, it.messyBoxes)) { px = sx; pz = sz; }
-        }
-        const ry = Math.atan2(look[0] - px, look[1] - pz);
-        it.tidyBoxes.push(...chairLegs(px, pz, ry));
-        addPart(it, chairGroup(M.red), from, frameM(px, pz, ry));
-        finishItem(it);
         break;
       }
       case 'sofa':
@@ -1602,7 +1550,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     scene.add(l);
     lights.push({ light: l, base: int, bulbs, flaky });
   };
-  LEVEL.lights.forEach((l, li) => pl(l.x, l.y, l.z, l.int, l.dist, [chandBulbs[li]]));
+  LEVEL.lights.forEach((l, li) => pl(l.x, l.y, l.z, l.int, l.dist, [chandBulbs[li]], l.flaky ?? 1));
 
   // ---- secret rooms: a single bare bulb on a cord (visible during play), the oldest bulbs in the house
   const pendants = new THREE.Group();

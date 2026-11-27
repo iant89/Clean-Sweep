@@ -86,6 +86,7 @@ export interface FurnDef {
   ry?: number; // free yaw rotation in radians (overrides f when set)
   h?: number;
   v?: number; // variant / state index
+  fallen?: boolean; // out of place — rendered lying on its side / on the floor
 }
 
 export type UpKey = 'battery' | 'bin' | 'speed' | 'brush' | 'suction' | 'charger';

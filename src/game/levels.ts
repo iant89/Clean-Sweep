@@ -10,7 +10,7 @@ export type SecretDoor = [number, number, string, -1 | 1];
 /** Rug drawn into the floor texture: x0,z0,x1,z1 (world units), colour scheme. */
 export type Rug = [number, number, number, number, string];
 /** Ceiling light: point light position/strength, plus the chandeliers (x,z,radius) it feeds (seen in menu & intro). */
-export interface LightDef { x: number; z: number; y: number; int: number; dist: number; chands: [number, number, number][] }
+export interface LightDef { x: number; z: number; y: number; int: number; dist: number; chands: [number, number, number][]; flaky?: number }
 
 export interface LevelDef {
   key: string;

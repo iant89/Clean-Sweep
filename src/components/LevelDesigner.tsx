@@ -19,7 +19,6 @@ const FURNITURE_PALETTE: PaletteItem[] = [
   { t: 'table', icon: '🍽️', label: 'Table' },
   { t: 'roundtable', icon: '⭕', label: 'Round Table' },
   { t: 'chair', icon: '🪑', label: 'Chair' },
-  { t: 'tipchair', icon: '💺', label: 'Tip Chair' },
   { t: 'sofa', icon: '🛋️', label: 'Sofa' },
   { t: 'armchair', icon: '🪑', label: 'Armchair' },
   { t: 'shelf', icon: '📚', label: 'Shelf' },
@@ -48,7 +47,7 @@ const FURNITURE_PALETTE: PaletteItem[] = [
 
 /** Default footprint [w,d] (local, before facing rotation) for picker + 2D marker sizing. */
 const FURN_SIZE: Record<string, [number, number]> = {
-  table: [2.4, 1.4], roundtable: [1.7, 1.7], chair: [0.95, 0.95], tipchair: [0.95, 0.95],
+  table: [2.4, 1.4], roundtable: [1.7, 1.7], chair: [0.95, 0.95],
   sofa: [3, 1.3], armchair: [1.8, 1.7], shelf: [2, 0.8], counter: [2, 1], stove: [1.5, 1.3],
   island: [2.4, 1.5], fridge: [1.3, 1.3], piano: [2.4, 1.2], pillar: [1, 1], plant: [1, 1],
   statue: [1.2, 1.2], clock: [1.2, 0.8], fireplace: [3, 1.2], desk: [2.4, 1.3], globe: [1, 1],
@@ -64,7 +63,6 @@ const FURN_WIRE: Record<string, { w: number; h: number; d: number; y: number; ro
   table: { w: 2.4, h: 1.6, d: 1.4, y: 0.8 },
   roundtable: { w: 1.7, h: 1.74, d: 1.7, y: 0.87, round: true },
   chair: { w: 0.95, h: 1.1, d: 0.95, y: 0.55 },
-  tipchair: { w: 1.0, h: 0.48, d: 2.1, y: 0.24 }, // lying flat on its side
   sofa: { w: 3, h: 1.1, d: 1.3, y: 0.55 },
   armchair: { w: 1.8, h: 1.2, d: 1.7, y: 0.6 },
   shelf: { w: 2, h: 2.2, d: 0.8, y: 1.1 },
@@ -91,7 +89,7 @@ const FURN_WIRE: Record<string, { w: number; h: number; d: number; y: number; ro
   bed: { w: 3, h: 1.2, d: 2.2, y: 0.6 },
 };
 const FURN_H: Record<string, number> = {
-  table: 1.2, roundtable: 1.2, chair: 1.1, tipchair: 1.1, sofa: 1.1, armchair: 1.2, shelf: 2.2,
+  table: 1.2, roundtable: 1.2, chair: 1.1, sofa: 1.1, armchair: 1.2, shelf: 2.2,
   counter: 1.5, stove: 1.6, island: 1.5, fridge: 2.2, piano: 1.3, pillar: 3.5, plant: 1.6,
   statue: 2.2, clock: 2.8, fireplace: 2.6, desk: 1.4, globe: 1.4, fountain: 1.8, books: 0.5,
   vase: 0.9, pots: 0.7, frame: 2.4, crate: 1.4, barrel: 1.5, machine: 2.6, bed: 1.2,
@@ -121,6 +119,12 @@ const WALL_PAPERS = [
 ];
 
 const ROT_ORDER = [0, P2, PI, -P2];
+/** Nearest cardinal wall direction (0, π/2, π, -π/2) for a given yaw. */
+const nearestCardinal = (ry: number) => {
+  const norm = ((ry % (2 * PI)) + 2 * PI) % (2 * PI); // 0..2π
+  const idx = Math.round(norm / P2) % 4;
+  return ROT_ORDER[idx];
+};
 
 /** Per-object special options, keyed by furniture type. Each entry maps a `v` value to a label. */
 const OBJECT_OPTIONS: Record<string, { label: string; v: number }[]> = {
@@ -133,6 +137,13 @@ const OBJECT_OPTIONS: Record<string, { label: string; v: number }[]> = {
   counter: [{ label: 'Wood Top', v: 1 }],
   island: [{ label: 'Wood Top', v: 1 }],
 };
+/**
+ * Furniture types small/light enough to be knocked over (rendered lying on its side / floor).
+ * Large or fixed objects (tables, pianos, shelves, appliances, beds, etc.) are excluded.
+ */
+const TIPPABLE = new Set([
+  'chair', 'armchair', 'plant', 'vase', 'pots', 'books', 'globe', 'barrel', 'crate', 'clock', 'statue',
+]);
 const RAD_TO_DEG = 180 / PI;
 const DEG_TO_RAD = PI / 180;
 const ROT_STEP = 15 * DEG_TO_RAD; // 15° per R-key press
@@ -144,7 +155,7 @@ interface Sel { kind: ObjKind; id: string }
 interface ERoom { key: string; name: string; floor: FloorStyle; dust: number; trails: number; patches: number; secret?: boolean }
 interface EFurn extends FurnDef { id: string }
 interface ERug { id: string; x0: number; z0: number; x1: number; z1: number; color: string }
-interface ELight { id: string; x: number; z: number; y: number; int: number; dist: number; chands: [number, number, number][] }
+interface ELight { id: string; x: number; z: number; y: number; int: number; dist: number; chands: [number, number, number][]; flaky?: number }
 interface EPainting { id: string; x: number; z: number; ry: number; w: number; h: number; idx: number }
 interface EWindow { id: string; x: number; z: number; ry: number }
 interface ESecret { id: string; c: number; r: number; roomKey: string; side: -1 | 1 }
@@ -197,7 +208,7 @@ function blankLevel(): EditorLevel {
     furniture: [],
     rugs: [],
     dock: { x: Math.round(WORLD_W / 2), z: Math.round(WORLD_H) - 3 },
-    lights: [{ id: uid(), x: Math.round(WORLD_W / 2), z: Math.round(WORLD_H / 2), y: 4, int: 40, dist: 26, chands: [] }],
+    lights: [{ id: uid(), x: Math.round(WORLD_W / 2), z: Math.round(WORLD_H / 2), y: 4, int: 40, dist: 26, chands: [], flaky: 1 }],
     paintings: [],
     windows: [],
     paper: WALL_PAPERS[0].paper,
@@ -222,9 +233,13 @@ function levelToEditor(level: LevelDef): EditorLevel {
     key: r.key, name: r.name, floor: r.floor, dust: r.dust, trails: r.trails, patches: r.patches, secret: r.secret,
   }));
   const secrets: ESecret[] = level.secretDoors.map(([c, r, roomKey, side]) => ({ id: uid(), c, r, roomKey, side }));
-  const furniture: EFurn[] = level.furniture.map((f) => ({ ...f, id: uid(), ry: f.ry ?? facingRot(f.f) }));
+  // Legacy `tipchair` → regular `chair` with the fallen (out-of-place) flag set.
+  const furniture: EFurn[] = level.furniture.map((f) => {
+    if (f.t === 'tipchair') return { ...f, t: 'chair', id: uid(), ry: f.ry ?? facingRot(f.f), fallen: true };
+    return { ...f, id: uid(), ry: f.ry ?? facingRot(f.f) };
+  });
   const rugs: ERug[] = level.rugs.map(([x0, z0, x1, z1, color]) => ({ id: uid(), x0, z0, x1, z1, color }));
-  const lights: ELight[] = level.lights.map((l) => ({ id: uid(), x: l.x, z: l.z, y: l.y, int: l.int, dist: l.dist, chands: l.chands.map((c) => [...c] as [number, number, number]) }));
+  const lights: ELight[] = level.lights.map((l) => ({ id: uid(), x: l.x, z: l.z, y: l.y, int: l.int, dist: l.dist, chands: l.chands.map((c) => [...c] as [number, number, number]), flaky: l.flaky ?? 1 }));
   const paintings: EPainting[] = level.paintings.map(([x, z, ry, w, h, idx]) => ({ id: uid(), x, z, ry, w, h, idx }));
   const windows: EWindow[] = level.windows.map(([x, z, ry]) => ({ id: uid(), x, z, ry }));
   const wp = WALL_PAPERS.find((w) => w.paper === level.walls.paper) ?? WALL_PAPERS[0];
@@ -246,7 +261,7 @@ function editorToLevelDef(e: EditorLevel): LevelDef {
     furniture: e.furniture.map(({ id, f, ry, ...rest }) => ({ ...rest, ry: ry ?? facingRot(f) })),
     rugs: e.rugs.map((r) => [r.x0, r.z0, r.x1, r.z1, r.color]),
     dock: { x: e.dock.x, z: e.dock.z },
-    lights: e.lights.map(({ id, ...l }) => ({ x: l.x, z: l.z, y: l.y, int: l.int, dist: l.dist, chands: l.chands })),
+    lights: e.lights.map(({ id, ...l }) => ({ x: l.x, z: l.z, y: l.y, int: l.int, dist: l.dist, chands: l.chands, flaky: l.flaky })),
     paintings: e.paintings.map((p) => [p.x, p.z, p.ry, p.w, p.h, p.idx]),
     windows: e.windows.map((w) => [w.x, w.z, w.ry]),
     walls: { paper: e.paper, wainscot: e.wainscot },
@@ -268,12 +283,13 @@ function exportTS(e: EditorLevel): string {
     if (f.ry != null) p.push(`ry: ${f.ry}`);
     if (f.h != null) p.push(`h: ${f.h}`);
     if (f.v != null) p.push(`v: ${f.v}`);
+    if (f.fallen) p.push(`fallen: true`);
     return `    { ${p.join(', ')} },`;
   }).join('\n');
   const rugs = def.rugs.map((r) => `    [${r[0]}, ${r[1]}, ${r[2]}, ${r[3]}, '${r[4]}'],`).join('\n');
   const lights = def.lights.map((l) => {
     const ch = l.chands.length ? ` [${l.chands.map((c) => `[${c[0]}, ${c[1]}, ${c[2]}]`).join(', ')}]` : ' []';
-    return `    { x: ${l.x}, y: ${l.y}, z: ${l.z}, int: ${l.int}, dist: ${l.dist}, chands:${ch} },`;
+    return `    { x: ${l.x}, y: ${l.y}, z: ${l.z}, int: ${l.int}, dist: ${l.dist}, chands:${ch}, flaky: ${l.flaky ?? 1} },`;
   }).join('\n');
   const paints = def.paintings.map((p) => `    [${p[0]}, ${p[1]}, ${p[2]}, ${p[3]}, ${p[4]}, ${p[5]}],`).join('\n');
   const wins = def.windows.map((w) => `    [${w[0]}, ${w[1]}, ${w[2]}],`).join('\n');
@@ -334,6 +350,7 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
   const [loadOpen, setLoadOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
+  const [propsCollapsed, setPropsCollapsed] = useState(false);
   const [showTip, setShowTip] = useState(true);
   const [view2d, setView2d] = useState({ zoom: 1, ox: 0, oz: 0 });
   const view2dRef = useRef(view2d);
@@ -495,13 +512,20 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       if (!f) { hl.visible = false; return; }
       const spec = FURN_WIRE[f.t] ?? { w: f.w ?? 1.5, h: f.h ?? 1.5, d: f.d ?? 1.5, y: (f.h ?? 1.5) / 2 };
       const w = f.w ?? spec.w, d = f.d ?? spec.d, h = f.h ?? spec.h;
-      if (spec.round) {
+      ry = editorRot(f);
+      if (f.fallen) {
+        // out of place: height & depth swap; the box center shifts backward (along yawed -z) by spec.y
+        // and lifts to d/2 so it rests on the floor — matching the world.ts frame (Rx(-π/2) + d/2 lift).
+        geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(Math.max(0.1, w), Math.max(0.1, d), Math.max(0.1, h)));
+        x = f.x - spec.y * Math.sin(ry); y = d / 2; z = f.z - spec.y * Math.cos(ry);
+      } else if (spec.round) {
         const r = Math.max(0.1, w / 2);
         geo = new THREE.EdgesGeometry(new THREE.CylinderGeometry(r, r, Math.max(0.1, h), 16, 1, false));
+        x = f.x; y = spec.y; z = f.z;
       } else {
         geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(Math.max(0.1, w), Math.max(0.1, h), Math.max(0.1, d)));
+        x = f.x; y = spec.y; z = f.z;
       }
-      x = f.x; y = spec.y; z = f.z; ry = editorRot(f);
     } else if (s.kind === 'rug') {
       const r = e.rugs.find((o) => o.id === s.id);
       if (!r) { hl.visible = false; return; }
@@ -606,9 +630,17 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       const spec = FURN_WIRE[f.t] ?? { w: f.w ?? 1.5, h: f.h ?? 1.5, d: f.d ?? 1.5, y: (f.h ?? 1.5) / 2 };
       const [w, d] = localFootprint(f.t, f.w, f.d);
       const h = f.h ?? spec.h;
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial());
-      m.position.set(f.x, spec.y, f.z);
-      m.rotation.y = editorRot(f);
+      const ry = editorRot(f);
+      let m: THREE.Mesh;
+      if (f.fallen) {
+        // fallen: height↔depth swap, center shifts backward by spec.y along the yawed -z axis
+        m = new THREE.Mesh(new THREE.BoxGeometry(w, d, h), new THREE.MeshBasicMaterial());
+        m.position.set(f.x - spec.y * Math.sin(ry), d / 2, f.z - spec.y * Math.cos(ry));
+      } else {
+        m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial());
+        m.position.set(f.x, spec.y, f.z);
+      }
+      m.rotation.y = ry;
       add(m, 'furniture', f.id);
     }
     for (const r of e.rugs) {
@@ -718,12 +750,6 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       g.fillText('⚡', dx, dz);
       if (cur?.kind === 'dock') { g.strokeStyle = '#66e0ff'; g.lineWidth = 2; g.strokeRect(dx - 7, dz - 6, 14, 12); }
     }
-    // lights
-    for (const l of e.lights) {
-      const lx = (l.x / TILE) * CELL, lz = (l.z / TILE) * CELL;
-      g.fillStyle = '#ffd84d'; g.beginPath(); g.arc(lx, lz, 3, 0, PI * 2); g.fill();
-      if (cur?.kind === 'light' && cur.id === l.id) { g.strokeStyle = '#66e0ff'; g.lineWidth = 1.5; g.beginPath(); g.arc(lx, lz, 5, 0, PI * 2); g.stroke(); }
-    }
     // paintings / windows on walls
     for (const p of e.paintings) drawWallDecor(g, p.x, p.z, p.ry, '#e0b040', cur?.kind === 'painting' && cur.id === p.id);
     for (const w of e.windows) drawWallDecor(g, w.x, w.z, w.ry, '#6aa0ff', cur?.kind === 'window' && cur.id === w.id);
@@ -736,9 +762,9 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       g.save();
       g.translate(fx, fz);
       g.rotate(-a);
-      g.fillStyle = 'rgba(40,46,60,0.9)';
+      g.fillStyle = f.fallen ? 'rgba(80,40,40,0.92)' : 'rgba(40,46,60,0.9)';
       g.fillRect(-cw / 2, -cd / 2, cw, cd);
-      g.strokeStyle = 'rgba(180,200,255,0.5)'; g.lineWidth = 1;
+      g.strokeStyle = f.fallen ? 'rgba(255,120,120,0.7)' : 'rgba(180,200,255,0.5)'; g.lineWidth = 1;
       g.strokeRect(-cw / 2, -cd / 2, cw, cd);
       // facing arrow: local +z = "front"
       g.strokeStyle = '#ffd060'; g.lineWidth = 1.5; g.beginPath();
@@ -748,6 +774,10 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       g.fillStyle = '#fff'; g.font = '7px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
       const lab = FURNITURE_PALETTE.find((p) => p.t === f.t)?.icon ?? '?';
       g.fillText(lab, 0, 0);
+      if (f.fallen) { // out-of-place marker: small "↰" above the icon
+        g.fillStyle = '#ff9090'; g.font = '6px sans-serif';
+        g.fillText('↰', 0, -5);
+      }
       g.restore();
       // selection highlight (AABB)
       if (cur?.kind === 'furniture' && cur.id === f.id) {
@@ -755,6 +785,14 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
         const sw = (hw / TILE) * CELL, sd = (hd / TILE) * CELL;
         g.strokeStyle = '#66e0ff'; g.lineWidth = 2; g.strokeRect(fx - sw / 2 - 1, fz - sd / 2 - 1, sw + 2, sd + 2);
       }
+    }
+    // lights — drawn after furniture so they're always visible on top
+    for (const l of e.lights) {
+      const lx = (l.x / TILE) * CELL, lz = (l.z / TILE) * CELL;
+      g.fillStyle = 'rgba(255,216,77,0.25)'; g.beginPath(); g.arc(lx, lz, 6, 0, PI * 2); g.fill();
+      g.fillStyle = '#ffd84d'; g.beginPath(); g.arc(lx, lz, 3, 0, PI * 2); g.fill();
+      g.strokeStyle = '#fff4a0'; g.lineWidth = 0.5; g.beginPath(); g.arc(lx, lz, 3, 0, PI * 2); g.stroke();
+      if (cur?.kind === 'light' && cur.id === l.id) { g.strokeStyle = '#66e0ff'; g.lineWidth = 2; g.beginPath(); g.arc(lx, lz, 6, 0, PI * 2); g.stroke(); }
     }
     // drag ghost
     if (inter.mode === 'drag' && inter.sel && inter.x != null && inter.z != null) {
@@ -778,10 +816,16 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
 
   function drawWallDecor(g: CanvasRenderingContext2D, x: number, z: number, ry: number, color: string, selected: boolean) {
     const cx = (x / TILE) * CELL, cz = (z / TILE) * CELL;
+    g.save();
+    g.translate(cx, cz);
+    g.rotate(-ry);
     g.fillStyle = color;
-    g.fillRect(cx - 3, cz - 3, 6, 6);
+    g.fillRect(-3, -3, 6, 6);
+    // facing arrow: local +z = "front" (the direction the decor faces into the room)
+    g.strokeStyle = color; g.lineWidth = 1; g.beginPath();
+    g.moveTo(0, 3); g.lineTo(0, 7); g.stroke();
+    g.restore();
     if (selected) { g.strokeStyle = '#66e0ff'; g.lineWidth = 1.5; g.strokeRect(cx - 4, cz - 4, 8, 8); }
-    void ry;
   }
 
   // ============================================================ 2D interaction
@@ -998,14 +1042,29 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
   function moveGhost(s: Sel, x: number, z: number) {
     const ghost = ghostRef.current;
     const e = levelRef.current;
-    let w = 1, d = 1, h = 1;
-    if (s.kind === 'furniture') { const f = e.furniture.find((o) => o.id === s.id); if (f) { const [fw, fd] = localFootprint(f.t, f.w, f.d); w = fw; d = fd; h = f.h ?? FURN_H[f.t] ?? 1.5; ghost.rotation.y = editorRot(f); } }
-    else if (s.kind === 'rug') { const r = e.rugs.find((o) => o.id === s.id); if (r) { w = Math.abs(r.x1 - r.x0); d = Math.abs(r.z1 - r.z0); h = 0.1; ghost.rotation.y = 0; } }
-    else if (s.kind === 'dock') { w = 2; d = 2; h = 1; ghost.rotation.y = 0; }
-    else { w = 1.4; d = 1.4; h = 1.5; ghost.rotation.y = 0; }
+    let w = 1, d = 1, h = 1, ry = 0;
+    if (s.kind === 'furniture') {
+      const f = e.furniture.find((o) => o.id === s.id);
+      if (f) {
+        const [fw, fd] = localFootprint(f.t, f.w, f.d); w = fw; d = fd; h = f.h ?? FURN_H[f.t] ?? 1.5;
+        ry = editorRot(f);
+        if (f.fallen) {
+          const specY = (FURN_WIRE[f.t]?.y ?? h / 2);
+          ghost.geometry.dispose();
+          ghost.geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(Math.max(0.2, w), Math.max(0.2, d), Math.max(0.2, h)));
+          ghost.position.set(x - specY * Math.sin(ry), d / 2, z - specY * Math.cos(ry));
+          ghost.rotation.y = ry;
+          ghost.visible = true;
+          return;
+        }
+      }
+    } else if (s.kind === 'rug') { const r = e.rugs.find((o) => o.id === s.id); if (r) { w = Math.abs(r.x1 - r.x0); d = Math.abs(r.z1 - r.z0); h = 0.1; } }
+    else if (s.kind === 'dock') { w = 2; d = 2; h = 1; }
+    else { w = 1.4; d = 1.4; h = 1.5; }
     ghost.geometry.dispose();
     ghost.geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(Math.max(0.2, w), Math.max(0.2, h), Math.max(0.2, d)));
     ghost.position.set(x, h / 2, z);
+    ghost.rotation.y = ry;
     ghost.visible = true;
   }
 
@@ -1019,7 +1078,7 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
         const w = 8, d = 6;
         next.rugs = [...l.rugs, { id: uid(), x0: snap(x) - w / 2, z0: snap(z) - d / 2, x1: snap(x) + w / 2, z1: snap(z) + d / 2, color: a.color ?? 'red' }];
       } else if (a.kind === 'light') {
-        next.lights = [...l.lights, { id: uid(), x: snap(x), z: snap(z), y: 4, int: 35, dist: 24, chands: [] }];
+        next.lights = [...l.lights, { id: uid(), x: snap(x), z: snap(z), y: 4, int: 35, dist: 24, chands: [], flaky: 1 }];
       } else if (a.kind === 'painting') {
         next.paintings = [...l.paintings, { id: uid(), x: snap(x), z: snap(z), ry: 0, w: 1.6, h: 1.2, idx: l.paintings.length % 6 }];
       } else if (a.kind === 'window') {
@@ -1043,9 +1102,9 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       if (s.kind === 'furniture') {
         next.furniture = l.furniture.map((f) => f.id === s.id ? { ...f, ry: (editorRot(f) + ROT_STEP) % (2 * PI) } : f);
       } else if (s.kind === 'painting') {
-        next.paintings = l.paintings.map((p) => p.id === s.id ? { ...p, ry: ROT_ORDER[(ROT_ORDER.indexOf(p.ry) + 1) % 4] } : p);
+        next.paintings = l.paintings.map((p) => p.id === s.id ? { ...p, ry: ROT_ORDER[(ROT_ORDER.indexOf(nearestCardinal(p.ry)) + 1) % 4] } : p);
       } else if (s.kind === 'window') {
-        next.windows = l.windows.map((w) => w.id === s.id ? { ...w, ry: ROT_ORDER[(ROT_ORDER.indexOf(w.ry) + 1) % 4] } : w);
+        next.windows = l.windows.map((w) => w.id === s.id ? { ...w, ry: ROT_ORDER[(ROT_ORDER.indexOf(nearestCardinal(w.ry)) + 1) % 4] } : w);
       } else if (s.kind === 'rug') {
         next.rugs = l.rugs.map((r) => {
           if (r.id !== s.id) return r;
@@ -1435,9 +1494,18 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
         </div>
 
         {/* right: 2D grid + tools + props */}
+        {propsCollapsed ? (
+          <div className="w-8 shrink-0 border-l border-white/10 bg-[#0c0c16] flex flex-col items-center pt-2">
+            <button className="text-slate-400 hover:text-amber-200 text-sm" onClick={() => setPropsCollapsed(false)} title="Expand panel">◀</button>
+            <span className="text-[9px] text-slate-500 mt-1 [writing-mode:vertical-rl]">Tools</span>
+          </div>
+        ) : (
         <div className="w-[360px] shrink-0 border-l border-white/10 bg-[#0c0c16] flex flex-col min-h-0">
           <div className="p-2 border-b border-white/10">
-            <div className="text-[11px] text-slate-400 mb-1">Tile tools</div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-[11px] text-slate-400">Tile tools</div>
+              <button className="px-1 text-slate-500 hover:text-amber-200 text-sm leading-none" onClick={() => setPropsCollapsed(true)} title="Collapse panel">▶</button>
+            </div>
             <div className="grid grid-cols-6 gap-1">
               {([['select', 'Pick'], ['room', 'Room'], ['wall', 'Wall'], ['door', 'Door'], ['secret', 'Secret'], ['eraser', 'Erase']] as const).map(([tk, label]) => (
                 <button key={tk} className={`rounded py-1.5 text-[10px] border ${tool === tk ? 'border-amber-400 bg-amber-400/15 text-amber-100' : 'border-white/10 bg-white/5 hover:bg-white/10'}`} onClick={() => setTool(tk as typeof tool)} title={tk}>{label}</button>
@@ -1525,19 +1593,30 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
 
                   {/* Rotation */}
                   {canRot && selObj.kind !== 'rug' && (
-                    <Section title="Rotation">
-                      <div className="flex items-center gap-2">
-                        <input type="range" min={0} max={360} step={5}
-                          value={Math.round(ryVal * RAD_TO_DEG) % 360}
-                          onChange={(e) => setField({ ry: Number(e.target.value) * DEG_TO_RAD })}
-                          className="flex-1 accent-cyan-400" />
-                        <span className="text-[11px] text-slate-300 tabular-nums w-9 text-right">{Math.round(ryVal * RAD_TO_DEG) % 360}°</span>
-                      </div>
-                      <div className="grid grid-cols-4 gap-1 mt-1">
-                        {[0, 90, 180, 270].map((deg) => (
-                          <button key={deg} className="btn-ghost rounded py-0.5 text-[10px]" onClick={() => setField({ ry: deg * DEG_TO_RAD })}>{deg}°</button>
-                        ))}
-                      </div>
+                    <Section title={selObj.kind === 'painting' || selObj.kind === 'window' ? 'Wall direction' : 'Rotation'}>
+                      {selObj.kind === 'painting' || selObj.kind === 'window' ? (
+                        <div className="grid grid-cols-4 gap-1">
+                          {[['N', 180], ['E', 270], ['S', 0], ['W', 90]].map(([label, deg]) => (
+                            <button key={label as string} className={`rounded py-1 text-[10px] border ${Math.round(nearestCardinal(ryVal) * RAD_TO_DEG) % 360 === (deg as number) % 360 ? 'border-amber-400 bg-amber-400/15 text-amber-100' : 'border-white/10 bg-white/5 hover:bg-white/10'}`}
+                              onClick={() => setField({ ry: (deg as number) * DEG_TO_RAD })}>{label}</button>
+                          ))}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <input type="range" min={0} max={360} step={5}
+                              value={Math.round(ryVal * RAD_TO_DEG) % 360}
+                              onChange={(e) => setField({ ry: Number(e.target.value) * DEG_TO_RAD })}
+                              className="flex-1 accent-cyan-400" />
+                            <span className="text-[11px] text-slate-300 tabular-nums w-9 text-right">{Math.round(ryVal * RAD_TO_DEG) % 360}°</span>
+                          </div>
+                          <div className="grid grid-cols-4 gap-1 mt-1">
+                            {[0, 90, 180, 270].map((deg) => (
+                              <button key={deg} className="btn-ghost rounded py-0.5 text-[10px]" onClick={() => setField({ ry: deg * DEG_TO_RAD })}>{deg}°</button>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </Section>
                   )}
                   {selObj.kind === 'rug' && (
@@ -1574,10 +1653,10 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
                   )}
 
                   {/* Object Options */}
-                  {opts && (
+                  {selObj.kind === 'furniture' && (
                     <Section title="Options">
                       <div className="space-y-1">
-                        {opts.map((opt) => (
+                        {opts?.map((opt) => (
                           <label key={opt.v} className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-white/10">
                             <input type="checkbox" checked={(f!.v ?? 0) === opt.v}
                               onChange={(e) => setField({ v: e.target.checked ? opt.v : 0 })}
@@ -1585,6 +1664,14 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
                             {opt.label}
                           </label>
                         ))}
+                        {TIPPABLE.has(f!.t) && (
+                          <label className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-white/10">
+                            <input type="checkbox" checked={!!f!.fallen}
+                              onChange={(e) => setField({ fallen: e.target.checked })}
+                              className="accent-cyan-400" />
+                            Out of place
+                          </label>
+                        )}
                       </div>
                     </Section>
                   )}
@@ -1609,6 +1696,24 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
                         <NumField label="Power" value={(selObj.ref as ELight).int} step={5} onChange={(v) => setField({ int: v })} />
                         <NumField label="Range" value={(selObj.ref as ELight).dist} step={2} onChange={(v) => setField({ dist: v })} />
                       </div>
+                      <label className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-white/10 mt-1.5">
+                        <input type="checkbox" checked={((selObj.ref as ELight).flaky ?? 1) > 0}
+                          onChange={(e) => setField({ flaky: e.target.checked ? 1 : 0 })}
+                          className="accent-cyan-400" />
+                        Flickers
+                      </label>
+                      {((selObj.ref as ELight).flaky ?? 1) > 0 && (() => {
+                        const fl = (selObj.ref as ELight).flaky ?? 1;
+                        return (
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className="text-[10px] text-slate-400 w-16 shrink-0">Intensity</span>
+                            <input type="range" min={0.1} max={2} step={0.1} value={fl}
+                              onChange={(e) => setField({ flaky: parseFloat(e.target.value) })}
+                              className="flex-1 accent-cyan-400" />
+                            <span className="text-[10px] text-slate-400 tabular-nums w-7 text-right">{fl.toFixed(1)}</span>
+                          </div>
+                        );
+                      })()}
                     </Section>
                   )}
                 </div>
@@ -1616,6 +1721,7 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
             })()}
           </div>
         </div>
+        )}
       </div>
     </div>
   );
