@@ -100,6 +100,8 @@ export interface MachineDef {
   mult: MachineStats;
   /** Upgrade prices on this machine are multiplied by this. */
   costMul: number;
+  /** Half-width of the wet trail it leaves on tile floors (0: a dry machine). */
+  mopR: number;
 }
 /**
  * The cleaning machines, in order. Buying the next one resets the upgrades so they can be bought again
@@ -107,23 +109,23 @@ export interface MachineDef {
  */
 export const MACHINES: MachineDef[] = [
   {
-    name: 'Robo Vacuum', icon: '🤖', desc: 'Where every career starts.', price: 0, costMul: 1,
+    name: 'Robo Vacuum', icon: '🤖', desc: 'Where every career starts.', price: 0, costMul: 1, mopR: 0,
     mult: { battery: 1, bin: 1, speed: 1, brush: 1, suction: 1, charger: 1 },
   },
   {
-    name: 'Mop & Sweep Bot', icon: '🧽', desc: 'Sweeps, then mops behind itself. Mud doesn\'t stand a chance.', price: 600, costMul: 2,
+    name: 'Mop & Sweep Bot', icon: '🧽', desc: 'Sweeps, then mops behind itself. Mud doesn\'t stand a chance.', price: 600, costMul: 2, mopR: 0.62,
     mult: { battery: 1.2, bin: 1.25, speed: 1.05, brush: 1.15, suction: 1.5, charger: 1.2 },
   },
   {
-    name: 'Auto Shop Vac', icon: '🌀', desc: 'A canister vac that drives itself. Huge bin, huge suction.', price: 1500, costMul: 3.5,
+    name: 'Auto Shop Vac', icon: '🌀', desc: 'A wet/dry canister vac that drives itself. Huge bin, huge suction.', price: 1500, costMul: 3.5, mopR: 0.55,
     mult: { battery: 1.4, bin: 2, speed: 1.1, brush: 1.3, suction: 2.2, charger: 1.4 },
   },
   {
-    name: 'Floor Scrubber', icon: '🚜', desc: 'Industrial scrub deck and squeegee. Built for hotel lobbies.', price: 3500, costMul: 5,
+    name: 'Floor Scrubber', icon: '🚜', desc: 'Industrial scrub deck and squeegee. Built for hotel lobbies.', price: 3500, costMul: 5, mopR: 0.85,
     mult: { battery: 1.8, bin: 2.6, speed: 1.15, brush: 1.45, suction: 3, charger: 1.7 },
   },
   {
-    name: 'Hover Cleaner', icon: '🛸', desc: 'Floats on a cushion of air. Cleans like it\'s from the future.', price: 7000, costMul: 7,
+    name: 'Hover Cleaner', icon: '🛸', desc: 'Floats on a cushion of air. Cleans like it\'s from the future.', price: 7000, costMul: 7, mopR: 0,
     mult: { battery: 2.2, bin: 3.2, speed: 1.3, brush: 1.6, suction: 4, charger: 2 },
   },
 ];

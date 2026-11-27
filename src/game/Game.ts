@@ -44,8 +44,12 @@ export interface HudState {
   upgrades: Record<UpKey, number>;
   /** Index into MACHINES. */
   machine: number;
-  /** Every upgrade maxed, so the next machine can be bought. */
+  /** Machines owned (MACHINES[0..owned-1]); any of them can be switched to on the dock. */
+  owned: number;
+  /** Every upgrade on the newest machine maxed, so the next machine can be bought. */
   allMaxed: boolean;
+  /** Upgrade levels of the newest machine (drives the unlock progress). */
+  bestUpgrades: Record<UpKey, number>;
   turbo: boolean;
   homeHint: boolean;
   secretsFound: number;
@@ -145,9 +149,13 @@ export class Game {
   battery = 100;
   bin = 0;
   binBase = 100;
-  up = emptyUpgrades();
-  /** Which cleaning machine you're driving (index into MACHINES). */
+  /** Every machine bought so far (index = MACHINES index), each with its own upgrade levels. */
+  garage: Record<UpKey, number>[] = [emptyUpgrades()];
+  /** Which cleaning machine you're driving (index into MACHINES and garage). */
   machine = 0;
+  /** Upgrade levels of the machine being driven. */
+  get up() { return this.garage[this.machine]; }
+  set up(v: Record<UpKey, number>) { this.garage[this.machine] = v; }
   mult = 1;
   comboTime = 0;
   comboTimer = 0;
@@ -309,13 +317,14 @@ export class Game {
         m.dispose();
       }
       this.dirt.tex.dispose();
+      this.dirt.wetTex.dispose();
     }
     setLevel(n);
     this.level = n;
     this.grid = buildGrid();
     this.dirt = new DirtMap(this.grid);
     this.dirt.dustMul = 1 + 0.15 * n;
-    this.world = buildWorld(this.dirt.tex, this.grid);
+    this.world = buildWorld(this.dirt.tex, this.grid, this.dirt.wetTex);
     setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
     const grid = this.grid;
@@ -354,6 +363,7 @@ export class Game {
     this.world.secrets.forEach((_, k) => this.setSecret(k, false));
     this.distField = this.bfs();
     this.dirt.generate(Math.floor(Math.random() * 1e6));
+    this.dirt.clearWet();
     this.binBase = Math.max(70, Math.min(220, this.dirt.totalUnits() * 0.12));
     this.battery = this.batteryMax;
     this.bin = 0;
@@ -429,17 +439,19 @@ export class Game {
   get chargeRate() { return 24 * (1 + 0.6 * this.up.charger) * this.mach.charger; }
   get emptyRate() { return this.binCap * 0.55 * (1 + 0.6 * this.up.charger) * this.mach.charger; }
 
-  /** Every upgrade on the current machine is maxed. */
-  get allMaxed() { return UPGRADES.every((u) => this.up[u.key] >= u.costs.length); }
+  /** Newest machine owned. */
+  get bestMachine() { return this.garage.length - 1; }
+  /** Every upgrade on the newest machine is maxed, so the next one can be bought. */
+  get allMaxed() { return UPGRADES.every((u) => this.garage[this.bestMachine][u.key] >= u.costs.length); }
 
-  /** Trade up to the next machine: needs every upgrade maxed. Upgrades start over on the new machine. */
+  /** Buy the next machine (needs every upgrade on the newest one maxed) and switch to it; its upgrades start from zero. */
   buyMachine() {
-    const next = MACHINES[this.machine + 1];
+    const next = MACHINES[this.garage.length];
     if (!next || !this.allMaxed || (this.phase !== 'shop' && this.phase !== 'playing')) return false;
     if (this.coins < next.price) { this.sfx.deny(); return false; }
     this.coins -= next.price;
-    this.machine++;
-    this.up = emptyUpgrades();
+    this.garage.push(emptyUpgrades());
+    this.machine = this.bestMachine;
     this.battery = this.batteryMax;
     this.bin = Math.min(this.bin, this.binCap);
     setMachineLook(this.world.roomba, this.machine);
@@ -492,6 +504,27 @@ export class Game {
   toggleMute() { this.sfx.setMuted(!this.sfx.muted); this.cb.onMute(this.sfx.muted); }
   setJoystick(x: number, y: number, active: boolean) { this.controls.setJoystick(x, y, active); }
   setTurbo(b: boolean) { this.controls.setBoost(b); }
+
+  /** Swap to another machine you already own; only on the dock. Battery keeps its charge level as a fraction. */
+  switchMachine(i: number) {
+    if (i === this.machine || i < 0 || i >= this.garage.length) return false;
+    if (!(this.phase === 'shop' || (this.phase === 'playing' && this.docked)) || this.ending) return false;
+    const frac = this.battery / this.batteryMax;
+    this.machine = i;
+    this.battery = frac * this.batteryMax;
+    this.bin = Math.min(this.bin, this.binCap);
+    setMachineLook(this.world.roomba, i);
+    this.sfx.click();
+    this.sfx.buy();
+    this.squash.jump(4);
+    for (let k = 0; k < 30; k++) {
+      const a = (k / 30) * Math.PI * 2;
+      this.glow.spawn(this.px, 0.4, this.pz, Math.cos(a) * 4, 1.5 + Math.random() * 2, Math.sin(a) * 4, 0.5, 1, 0.9, 0.3, 0.8, 4);
+    }
+    this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1);
+    this.pushHud();
+    return true;
+  }
 
   buy(key: UpKey) {
     const def = UPGRADES.find((u) => u.key === key)!;
@@ -586,6 +619,7 @@ export class Game {
       binBase: this.binBase,
       up: { ...this.up },
       machine: this.machine,
+      garage: this.garage.map((g) => ({ ...g })),
       mult: this.mult,
       comboTime: this.comboTime,
       comboTimer: this.comboTimer,
@@ -656,8 +690,15 @@ export class Game {
     this.coinFrac = run.coinFrac;
     this.binBase = run.binBase;
     this.machine = Math.min(MACHINES.length - 1, run.machine ?? 0);
+    if (run.garage?.length) {
+      this.garage = run.garage.slice(0, MACHINES.length).map((g) => ({ ...emptyUpgrades(), ...g }));
+      this.machine = Math.min(this.machine, this.garage.length - 1);
+    } else {
+      // older saves: the machines before the current one were all maxed when you traded up
+      const maxed = () => Object.fromEntries(UPGRADES.map((u) => [u.key, u.costs.length])) as Record<UpKey, number>;
+      this.garage = [...Array.from({ length: this.machine }, maxed), { ...emptyUpgrades(), ...run.up }];
+    }
     setMachineLook(this.world.roomba, this.machine);
-    this.up = { ...emptyUpgrades(), ...run.up };
     this.battery = Math.min(this.batteryMax, run.battery);
     this.bin = run.bin;
     this.mult = run.mult;
@@ -761,7 +802,7 @@ export class Game {
     this.coins = 0;
     this.coinsEarned = 0;
     this.coinFrac = 0;
-    this.up = emptyUpgrades();
+    this.garage = [emptyUpgrades()];
     this.machine = 0;
     setMachineLook(this.world.roomba, 0);
     this.mult = 1;
@@ -1353,6 +1394,7 @@ export class Game {
     }
 
     if (!this.devFreezeTime) this.time += dt;
+    this.dirt.dry(dt);
     this.autosaveT += dt;
     if (this.autosaveT >= AUTOSAVE_EVERY) this.autosave();
     // hours are counted across nights: every 5th one is a dawn, after which the curse rewinds the clock
@@ -1434,6 +1476,10 @@ export class Game {
       const drain = 0.5 + frac * (this.turbo ? 2.6 : 1.0);
       if (!this.devInfBattery) this.battery -= drain * dt;
       if (this.battery <= 0) { this.battery = 0; this.startEnding('battery'); return; }
+
+      // wet machines leave a freshly-mopped sheen on tile floors, just behind them
+      const mopR = MACHINES[this.machine].mopR;
+      if (mopR > 0 && sp > 0.3) this.dirt.mop(this.px - Math.sin(this.yaw) * 0.4, this.pz - Math.cos(this.yaw) * 0.4, mopR);
 
       // cleaning
       const room = this.bin < this.binCap ? (this.binCap - this.bin) * UNIT : 0;
@@ -1920,7 +1966,9 @@ export class Game {
       overall: this.dirt.overall(),
       upgrades: { ...this.up },
       machine: this.machine,
+      owned: this.garage.length,
       allMaxed: this.allMaxed,
+      bestUpgrades: { ...this.garage[this.bestMachine] },
       turbo: this.turbo,
       homeHint: this.homeHint,
     });
