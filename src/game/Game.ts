@@ -571,7 +571,9 @@ export class Game {
   // ------------------------------------------------------------ developer cheats
   /** Run a cheat from the dev menu. Returns a short description for feedback, or null if it can't run now. */
   devCheat(cmd: DevCheat): string | null {
-    if (!this.canSave) return null;
+    // Dev cheats are a debugging tool — they work in any play state, including playtests from the
+    // level designer (where canSave is false). Only bail out if there's no live run at all.
+    if (this.phase === 'menu' || this.phase === 'intro' || this.ending) return null;
     switch (cmd) {
       case 'coins100': this.coins += 100; break;
       case 'coins1000': this.coins += 1000; break;
