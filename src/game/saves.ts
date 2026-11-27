@@ -69,6 +69,8 @@ export interface RunSnapshot {
   dirtTotal: number[];
   /** Rooms visited (older saves: none). */
   explored?: boolean[];
+  /** Night index the whole-manor bonus was last paid in (older saves: missing). */
+  manorBonusNight?: number;
   /** Secret doors found (older saves: none). */
   secrets?: boolean[];
   /** Dirt texture bytes, zero-run-length encoded then base64. */

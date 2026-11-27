@@ -158,6 +158,8 @@ export class Game {
   hourAnnounced = 0;
   /** Seconds left on the warm sunrise glow after a dawn. */
   dawnGlow = 0;
+  /** Night index the whole-manor bonus was last paid in (-1: never). */
+  manorBonusNight = -1;
   curRoom = -1;
   /** Rooms the roomba has driven into this run; the rest stay blurred on the minimap. */
   explored: boolean[] = ROOMS.map(() => false);
@@ -480,6 +482,7 @@ export class Game {
       tidyQueue,
       dirtTotal: Array.from(this.dirt.total),
       explored: [...this.explored],
+      manorBonusNight: this.manorBonusNight,
       secrets: [...this.secretFound],
       dirt: encodeBytes(this.dirt.data),
       dirtLen: this.dirt.data.length,
@@ -539,6 +542,8 @@ export class Game {
     this.fullHinted = true;
     this.dockHinted = true;
     this.explored = ROOMS.map((_, i) => !!run.explored?.[i]);
+    // older saves didn't track it: assume this night's bonus is taken if the manor is already spotless
+    this.manorBonusNight = run.manorBonusNight ?? (ROOMS.every((r, k) => r.secret || this.cleared[k]) ? this.night : -1);
     this.world.secrets.forEach((_, k) => this.setSecret(k, !!run.secrets?.[k]));
     this.distField = this.bfs();
 
@@ -652,6 +657,7 @@ export class Game {
     this.nextGhost = 38;
     this.hourAnnounced = 0;
     this.dawnGlow = 0;
+    this.manorBonusNight = -1;
     this.curRoom = -1;
     this.explored = ROOMS.map(() => false);
     this.px = DOCK.x; this.pz = DOCK.z; this.vx = 0; this.vz = 0; this.yaw = Math.PI;
@@ -1605,7 +1611,9 @@ export class Game {
       this.tidyDelay = Math.max(this.tidyDelay, 1.4);
     }
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1.5);
-    if (!ROOMS[i].secret && ROOMS.every((r, k) => r.secret || this.cleared[k])) {
+    // whole-manor bonus: once per night, so re-cleaning after a ghost visit doesn't pay it again
+    if (!ROOMS[i].secret && this.manorBonusNight !== this.night && ROOMS.every((r, k) => r.secret || this.cleared[k])) {
+      this.manorBonusNight = this.night;
       this.score += 5000;
       this.coins += 100;
       this.coinsEarned += 100;
