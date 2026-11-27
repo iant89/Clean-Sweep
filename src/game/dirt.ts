@@ -39,6 +39,10 @@ export class DirtMap {
   tex: THREE.DataTexture;
   dirty = false;
   touched = 0; // bitmask of rooms touched in last clean()
+  /** Rooms that count towards the manor totals (secret rooms join once they're found). */
+  counted = ROOMS.map((r) => !r.secret);
+  /** Later buildings start out dirtier. */
+  dustMul = 1;
 
   constructor(public grid: Int8Array) {
     this.tex = new THREE.DataTexture(this.data, DW, DH, THREE.RedFormat, THREE.UnsignedByteType);
@@ -77,6 +81,30 @@ export class DirtMap {
       const i0 = Math.max(0, Math.floor((b.minX - m) * DPU)), i1 = Math.min(DW - 1, Math.ceil((b.maxX + m) * DPU));
       const j0 = Math.max(0, Math.floor((b.minZ - m) * DPU)), j1 = Math.min(DH - 1, Math.ceil((b.maxZ + m) * DPU));
       for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) this.mask[j * DW + i] = 0;
+    }
+  }
+
+  /**
+   * Open (recompute from the grid, ignoring furniture) or close (mask out) a single floor tile.
+   * Opening also redoes a thin border around it, where the closed tile's collision margin had spilled over.
+   */
+  setTileMask(c: number, r: number, open: boolean) {
+    const g = this.grid, margin = 0.22, T = TILE * DPU, pad = open ? 2 : 0;
+    for (let j = r * T - pad; j < (r + 1) * T + pad; j++) {
+      const z = (j + 0.5) / DPU, rr = Math.floor(z / TILE), lz = z - rr * TILE;
+      for (let i = c * T - pad; i < (c + 1) * T + pad; i++) {
+        if (i < 0 || j < 0 || i >= DW || j >= DH) continue;
+        const idx = j * DW + i;
+        if (!open) { this.mask[idx] = 0; continue; }
+        const x = (i + 0.5) / DPU, cc = Math.floor(x / TILE), lx = x - cc * TILE;
+        if (g[rr * COLS + cc] < 0) continue;
+        let ok = 1;
+        if (lx < margin && g[rr * COLS + cc - 1] < 0) ok = 0;
+        else if (lx > TILE - margin && g[rr * COLS + cc + 1] < 0) ok = 0;
+        else if (lz < margin && g[(rr - 1) * COLS + cc] < 0) ok = 0;
+        else if (lz > TILE - margin && g[(rr + 1) * COLS + cc] < 0) ok = 0;
+        this.mask[idx] = ok;
+      }
     }
   }
 
@@ -185,7 +213,7 @@ export class DirtMap {
         const idx = j * DW + i;
         if (!this.mask[idx]) continue;
         const rid = this.room[idx];
-        const dens = ROOMS[rid].dust;
+        const dens = Math.min(1.3, ROOMS[rid].dust * this.dustMul);
         const wx = (i + 0.5) / DPU;
         const n = vnoise(wx * 0.35, wz * 0.35, seed) * 0.6 + vnoise(wx * 1.3, wz * 1.3, seed + 3) * 0.4;
         const thr = 1.02 - dens * 0.62;
@@ -202,7 +230,7 @@ export class DirtMap {
         const z = (r + 0.5 + rng() * (h - 1)) * TILE;
         this.blob(x, z, 0.7 + rng() * 1.7, 0.75 + rng() * 0.25, seed + p * 13 + ri * 101);
       }
-      for (let t = 0; t < room.trails; t++) {
+      for (let t = 0; t < Math.round(room.trails * this.dustMul); t++) {
         const steps = this.trailSteps(rng, ri, 14 + Math.floor(rng() * 22));
         for (const s of steps) this.shoe(s.x, s.z, s.a, s.s, s.left);
       }
@@ -258,13 +286,13 @@ export class DirtMap {
 
   overall() {
     let s = 0, t = 0;
-    for (let i = 0; i < ROOMS.length; i++) { s += this.sum[i]; t += this.total[i]; }
+    for (let i = 0; i < ROOMS.length; i++) if (this.counted[i]) { s += this.sum[i]; t += this.total[i]; }
     return t > 0 ? 1 - s / t : 1;
   }
 
   totalUnits() {
     let t = 0;
-    for (let i = 0; i < ROOMS.length; i++) t += this.sum[i];
+    for (let i = 0; i < ROOMS.length; i++) if (this.counted[i]) t += this.sum[i];
     return t / UNIT;
   }
 

@@ -4,7 +4,10 @@ export interface ScoreEntry {
   name: string;
   score: number;
   rooms: number;
+  /** 'dawn' only on entries from before nights became endless. */
   reason: 'dawn' | 'battery';
+  /** Nights survived (dawns reached); missing on older entries. */
+  nights?: number;
   date: number;
 }
 const KEY = 'cleansweep_scores_v1';
