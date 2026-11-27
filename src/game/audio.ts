@@ -29,6 +29,51 @@ export class Sfx extends Synth {
     this.tone(300, 1.4, 'sine', 0.15, 250);
     this.tone(450, 1.6, 'sine', 0.08, -200, 0.3);
   }
+  /** A ghost being vacuumed up: a rising suction whoosh plus a wobbly wail gliding up as it spirals in. */
+  ghostSuck(dur = 1.7) {
+    if (!this.ctx || !this.master || !this.noiseBuf) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 2.2;
+    bp.frequency.setValueAtTime(220, t);
+    bp.frequency.exponentialRampToValueAtTime(3400, t + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.55, t + dur * 0.75);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.12);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.2);
+    // the ghost's wail, wobbling as it's dragged in
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(380, t);
+    o.frequency.exponentialRampToValueAtTime(1600, t + dur);
+    const lfo = ctx.createOscillator();
+    lfo.frequency.setValueAtTime(5, t);
+    lfo.frequency.linearRampToValueAtTime(14, t + dur);
+    const depth = ctx.createGain();
+    depth.gain.value = 45;
+    lfo.connect(depth).connect(o.frequency);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.exponentialRampToValueAtTime(0.13, t + 0.25);
+    og.gain.setValueAtTime(0.13, t + dur * 0.8);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(og).connect(this.master);
+    o.start(t); lfo.start(t);
+    o.stop(t + dur + 0.05); lfo.stop(t + dur + 0.05);
+  }
+  /** The ghost disappears into the bin: a thump, a puff and a bright jingle. */
+  ghostPop() {
+    this.tone(95, 0.35, 'sine', 0.4, -45);
+    this.noise(0.3, 1600, 0.25);
+    [784, 1047, 1319, 1568, 2093].forEach((f, i) => this.tone(f, 0.3, 'triangle', 0.13, 0, 0.08 + i * 0.07));
+  }
   buy() { this.tone(1200, 0.08, 'square', 0.1); this.tone(1600, 0.08, 'square', 0.1, 0, 0.06); this.tone(2000, 0.25, 'triangle', 0.12, 0, 0.12); }
   over() { [523, 440, 349, 262].forEach((f, i) => this.tone(f, 0.4, 'triangle', 0.22, -20, i * 0.18)); }
   dawn() { [523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.3, 'triangle', 0.2, 0, i * 0.12)); }

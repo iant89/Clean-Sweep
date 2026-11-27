@@ -74,6 +74,8 @@ export interface GameOverInfo {
   coins: number;
   /** Nights fully survived (dawns reached) this run. */
   nights: number;
+  /** Ghosts vacuumed up this run. */
+  ghosts: number;
   /** Building reached (1-based) and its name / room count. */
   levelNum: number;
   levelName: string;
@@ -109,7 +111,55 @@ export type DevCheat =
   | 'coins100' | 'coins1000' | 'battery' | 'infBattery' | 'emptyBin' | 'maxUpgrades'
   | 'cleanRoom' | 'cleanAll' | 'ghost' | 'hour' | 'dawn' | 'freezeTime' | 'dock';
 
-interface Ghost { room: number; steps: { x: number; z: number; a: number; left: boolean; s: number }[]; idx: number; timer: number; x: number; z: number; fade: number }
+interface Ghost {
+  room: number; steps: { x: number; z: number; a: number; left: boolean; s: number }[]; idx: number; timer: number; x: number; z: number; fade: number;
+  /** Set while it's being vacuumed up: seconds in, and its swirl radius/angle around the roomba at the start. */
+  suck?: { t: number; r0: number; a: number; spin: number };
+}
+
+/** Seconds the ghost takes to spiral into the vacuum. */
+const SUCK_TIME = 1.7;
+
+/** A translucent tornado funnel: two open cones (wide at the top) with streaky spiral textures. */
+function makeCyclone() {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 256;
+  const g = c.getContext('2d')!;
+  g.clearRect(0, 0, 128, 256);
+  // diagonal streaks that wrap around the cone, brighter towards the bottom
+  for (let k = 0; k < 26; k++) {
+    const x = Math.random() * 128, w = 2 + Math.random() * 6, a = 0.25 + Math.random() * 0.6;
+    const grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, `rgba(200,230,255,0)`);
+    grad.addColorStop(0.35, `rgba(200,230,255,${a * 0.6})`);
+    grad.addColorStop(1, `rgba(230,245,255,${a})`);
+    g.strokeStyle = grad;
+    g.lineWidth = w;
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.bezierCurveTo(x + 40, 90, x - 30, 170, x + 50, 256);
+    g.stroke();
+    g.beginPath(); // wrapped copy so the seam tiles
+    g.moveTo(x - 128, 0);
+    g.bezierCurveTo(x - 88, 90, x - 158, 170, x - 78, 256);
+    g.stroke();
+  }
+  const group = new THREE.Group();
+  for (const [rTop, rBot, h] of [[1.5, 0.3, 2.9], [1.15, 0.22, 2.4]] as const) {
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 1);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, color: 0xbfe6ff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+    });
+    const cone = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, h, 28, 1, true), mat);
+    cone.position.y = h / 2 + 0.15;
+    cone.renderOrder = 6;
+    group.add(cone);
+  }
+  group.visible = false;
+  return group;
+}
 
 const AUTOSAVE_EVERY = 15;
 
@@ -178,6 +228,8 @@ export class Game {
   ghost: Ghost | null = null;
   nextGhost = 40;
   hourAnnounced = 0;
+  /** Ghosts vacuumed up this run. */
+  ghostsBusted = 0;
   /** Seconds left on the warm sunrise glow after a dawn. */
   dawnGlow = 0;
   /** Night index the whole-manor bonus was last paid in (-1: never). */
@@ -227,6 +279,8 @@ export class Game {
   coinsList: Coin[] = [];
   coinMesh: THREE.InstancedMesh;
   ghostSprite: THREE.Sprite;
+  /** Swirling tornado funnel shown while a ghost is vacuumed up (two counter-rotating layers). */
+  cyclone: THREE.Group;
   arrow: THREE.Group;
   popups: Popups;
   distField!: Int16Array;
@@ -279,6 +333,7 @@ export class Game {
     }));
     this.ghostSprite.scale.set(2.2, 2.2, 1);
     this.ghostSprite.visible = false;
+    this.cyclone = makeCyclone();
 
     // home arrow
     this.arrow = new THREE.Group();
@@ -303,8 +358,8 @@ export class Game {
   private buildLevel(n: number) {
     const old = this.world;
     if (old) {
-      old.scene.remove(this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow);
-      const keep = new Set<unknown>([this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow]);
+      old.scene.remove(this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow, this.cyclone);
+      const keep = new Set<unknown>([this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow, this.cyclone]);
       const mats = new Set<THREE.Material>();
       old.scene.traverse((o) => {
         if (keep.has(o)) return;
@@ -347,7 +402,7 @@ export class Game {
     this.bulbs = [];
     this.tidyQueue = [];
     this.tidy = null;
-    this.world.scene.add(this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow);
+    this.world.scene.add(this.dust.points, this.glow.points, this.coinMesh, this.ghostSprite, this.arrow, this.cyclone);
     if (old) {
       this.setPhase(this.phase); // re-apply cutaway, fog and ceiling visibility to the new scene
       this.renderer.compile(this.world.scene, this.camera);
@@ -376,7 +431,7 @@ export class Game {
     this.dying = 0;
     this.warned30 = this.warned12 = this.binWarned = false;
     this.ghost = null;
-    this.ghostSprite.visible = false;
+    this.resetGhostSprite();
     this.manorBonusNight = -1;
     this.curRoom = -1;
     this.explored = ROOMS.map(() => false);
@@ -630,7 +685,7 @@ export class Game {
       warned30: this.warned30,
       warned12: this.warned12,
       binWarned: this.binWarned,
-      ghost: g ? { room: g.room, steps: g.steps.map((s) => ({ ...s })), idx: g.idx, timer: g.timer, x: g.x, z: g.z, fade: g.fade } : null,
+      ghost: g && !g.suck ? { room: g.room, steps: g.steps.map((s) => ({ ...s })), idx: g.idx, timer: g.timer, x: g.x, z: g.z, fade: g.fade } : null,
       nextGhost: this.nextGhost,
       hourAnnounced: this.hourAnnounced,
       px: this.px,
@@ -815,6 +870,7 @@ export class Game {
     this.endTimer = 0;
     this.nextGhost = 38;
     this.hourAnnounced = 0;
+    this.ghostsBusted = 0;
     this.dawnGlow = 0;
     this.resetBuilding();
   }
@@ -1684,6 +1740,7 @@ export class Game {
       bonus,
       coins: this.coins,
       nights: this.night,
+      ghosts: this.ghostsBusted,
       levelNum: this.level + 1,
       levelName: LEVEL.name,
       roomsTotal: this.roomCount(),
@@ -1781,6 +1838,16 @@ export class Game {
     }
     const g = this.ghost;
     if (!g) return;
+    if (g.suck) { this.updateGhostSuck(g, dt); return; }
+    // drive under a ghost and the vacuum pulls it in
+    if (g.fade > 0.4 && !this.docked && !this.ending && Math.hypot(g.x - this.px, g.z - this.pz) < 1.25) {
+      g.suck = { t: 0, r0: Math.max(0.6, Math.hypot(g.x - this.px, g.z - this.pz)), a: Math.atan2(g.z - this.pz, g.x - this.px), spin: 0 };
+      this.sfx.ghostSuck(SUCK_TIME);
+      this.cb.onToast('🌪️ GOT ONE! Sucking up the ghost…', 'good');
+      this.addTrauma(0.2);
+      this.updateGhostSuck(g, dt);
+      return;
+    }
     if (g.idx < g.steps.length) {
       g.fade = Math.min(1, g.fade + dt * 2);
       g.timer -= dt;
@@ -1804,6 +1871,86 @@ export class Game {
     const t = performance.now() / 1000;
     this.ghostSprite.position.set(g.x, 1.3 + Math.sin(t * 3) * 0.2, g.z);
     this.ghostSprite.material.opacity = g.fade * (0.75 + 0.25 * Math.sin(t * 9));
+  }
+
+  /** The ghost spirals down into the vacuum inside a swirling funnel of sparkles and dust, then pops. */
+  private updateGhostSuck(g: Ghost, dt: number) {
+    const sk = g.suck!;
+    sk.t += dt;
+    const u = Math.min(1, sk.t / SUCK_TIME);
+    // tighter and faster as it goes, dropping from head height into the machine
+    sk.a += dt * (5 + 22 * u * u);
+    const r = sk.r0 * Math.pow(1 - u, 1.4);
+    g.x = this.px + Math.cos(sk.a) * r;
+    g.z = this.pz + Math.sin(sk.a) * r;
+    const y = 0.35 + 1.0 * (1 - u * u);
+    const sp = this.ghostSprite;
+    sp.position.set(g.x, y, g.z);
+    const sc = 2.2 * (1 - 0.85 * u) * (1 + 0.15 * Math.sin(sk.t * 30) * u);
+    sp.scale.set(sc * (1 - 0.35 * u), sc * (1 + 0.5 * u), 1); // stretched as it's pulled down
+    sp.material.rotation += dt * (4 + 14 * u);
+    sp.material.opacity = Math.min(1, g.fade) * (0.85 + 0.15 * Math.sin(sk.t * 40));
+    sp.material.color.setRGB(1 - 0.4 * u, 1 - 0.1 * u, 1);
+    // the cyclone: sparkles and dust spawned round a funnel, flung sideways and pulled into the roomba
+    for (let k = 0; k < 7; k++) {
+      const h = Math.random() * 2.6;
+      const fr = 0.25 + h * 0.5;
+      const fa = Math.random() * Math.PI * 2;
+      const x = this.px + Math.cos(fa) * fr, z = this.pz + Math.sin(fa) * fr;
+      const tang = 3 + h * 2;
+      const blue = Math.random() < 0.5;
+      this.glow.spawn(x, 0.2 + h, z, -Math.sin(fa) * tang, -0.6, Math.cos(fa) * tang,
+        blue ? 0.55 : 0.8, blue ? 0.75 : 0.65, 1, 0.14 + Math.random() * 0.12, 0.7, 0, 5);
+    }
+    if (Math.random() < 0.6) {
+      const fa = Math.random() * Math.PI * 2, fr = 0.6 + Math.random() * 1.2;
+      this.dust.spawn(this.px + Math.cos(fa) * fr, 0.1 + Math.random() * 1.5, this.pz + Math.sin(fa) * fr,
+        -Math.sin(fa) * 3.5, 0.2, Math.cos(fa) * 3.5, 0.75, 0.72, 0.8, 0.18, 0.6, 0, 4);
+    }
+    // the funnel spins up, then collapses into the machine at the end
+    const cy = this.cyclone;
+    cy.visible = true;
+    cy.position.set(this.px, 0, this.pz);
+    const grow = Math.min(1, sk.t / 0.35), shrink = u > 0.8 ? 1 - (u - 0.8) / 0.2 : 1;
+    const env = grow * shrink;
+    cy.scale.set(0.5 + 0.5 * env, 0.3 + 0.7 * grow * (0.4 + 0.6 * shrink), 0.5 + 0.5 * env);
+    cy.children.forEach((layer, i) => {
+      const m = layer as THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+      layer.rotation.y += dt * (i ? -1 : 1) * (8 + 14 * u);
+      m.material.opacity = env * (i ? 0.4 : 0.6);
+      if (m.material.map) m.material.map.offset.y -= dt * (1.2 + 2 * u);
+    });
+    this.squash.squash(Math.sin(sk.t * 28) * 0.6 * u);
+    if (u >= 1) this.bustGhost();
+  }
+
+  /** Ghost caught: big bonus, a burst, and no more mud from it. */
+  private bustGhost() {
+    this.ghostsBusted++;
+    const pts = Math.round((1500 + 500 * this.night) * this.mult);
+    const coins = 25 + 5 * this.night;
+    this.score += pts;
+    this.coins += coins;
+    this.coinsEarned += coins;
+    this.sfx.ghostPop();
+    this.addTrauma(0.45);
+    this.squash.jump(5);
+    this.glow.burst(this.px, 0.6, this.pz, 50, 6, 0.7, 0.85, 1, 0.35, 0.9, 4);
+    this.glow.burst(this.px, 0.6, this.pz, 25, 4, 1, 0.85, 0.4, 0.3, 0.8, 4);
+    this.popup(`👻 +${pts.toLocaleString()}`, '#bfe6ff', 1.6, 1.5);
+    this.cb.onToast(`👻 GHOST BUSTED${this.ghostsBusted > 1 ? ` ×${this.ghostsBusted}` : ''}! +${pts.toLocaleString()} +${coins}🪙`, 'big');
+    this.ghost = null;
+    this.resetGhostSprite();
+    this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 2);
+  }
+
+  private resetGhostSprite() {
+    this.cyclone.visible = false;
+    const sp = this.ghostSprite;
+    sp.visible = false;
+    sp.scale.set(2.2, 2.2, 1);
+    sp.material.rotation = 0;
+    sp.material.color.setRGB(1, 1, 1);
   }
 
   private updateArrow(dt: number) {

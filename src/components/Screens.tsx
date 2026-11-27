@@ -112,7 +112,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
               <li>🔋 Battery drains as you drive. 🗑️ A full bin stops cleaning. Return to the <b className="text-emerald-300">dock</b> to charge & empty.</li>
               <li>🛒 Spend coins on upgrades while docked. Max them all to trade up to a better machine: mop bot, shop vac, floor scrubber…</li>
               <li>🚚 Get every room of a building spotless to unlock the <b>next building</b>: a hunting lodge, a grand hotel, and on it goes.</li>
-              <li>👻 Beware: something keeps tracking mud back in…</li>
+              <li>👻 Beware: something keeps tracking mud back in… drive right under it to suck it up for a big bonus!</li>
               <li>☀️ Every <b>5:00 AM</b> dawn pays a big bonus, then the curse winds the clock back to midnight and the mud returns. Keep sweeping as long as your battery lasts!</li>
             </ul>
             <div className="mt-3 pt-3 border-t border-white/10 text-xs text-amber-100/60">
@@ -340,6 +340,7 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch }: { info:
             <div className="text-xs tracking-[0.3em] text-amber-100/50">FINAL SCORE</div>
             <div className="font-black text-5xl sm:text-6xl gold-text tabular-nums">{shown.toLocaleString()}</div>
             {info.bonus > 0 && <div className="text-emerald-300 text-sm font-bold">incl. dawn bonus +{info.bonus.toLocaleString()}</div>}
+            {info.ghosts > 0 && <div className="text-sky-200 text-sm font-bold">👻 {info.ghosts} ghost{info.ghosts === 1 ? '' : 's'} busted</div>}
           </div>
           <div className="grid grid-cols-4 gap-2 text-center text-xs">
             <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Lasted</div><div className="font-black text-amber-200">Night {nightNumber(info.time)}</div><div className="text-[10px] text-amber-100/60">{formatClock(info.time)}</div></div>
