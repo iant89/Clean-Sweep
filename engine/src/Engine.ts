@@ -23,7 +23,8 @@ export interface EngineOptions {
  */
 export class Engine {
   readonly renderer: THREE.WebGLRenderer;
-  readonly scene = new THREE.Scene();
+  /** The scene that gets rendered. Swap it freely (e.g. one scene per level). */
+  scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly isTouch: boolean;
   pixelRatio: number;
@@ -61,11 +62,11 @@ export class Engine {
     document.addEventListener('visibilitychange', this.onVis);
   }
 
-  /** Create a particle system that's already in the scene and kept at the right size on screen. */
-  addParticles(max: number, additive: boolean) {
+  /** Create a particle system kept at the right size on screen (added to the current scene unless told not to). */
+  addParticles(max: number, additive: boolean, addToScene = true) {
     const p = new Particles(max, additive);
     this.particles.push(p);
-    this.scene.add(p.points);
+    if (addToScene) this.scene.add(p.points);
     this.syncProjection();
     return p;
   }

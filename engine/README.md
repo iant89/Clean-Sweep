@@ -1,7 +1,8 @@
 # Engine
 
 The movement and "game feel" core of Clean Sweep, pulled out so it can drive other games.
-It depends only on `three`. Copy the `engine/` folder into a new project, or import from `engine/src`.
+It depends only on `three`. Clean Sweep itself runs on it (`src/game/Game.ts`), so it stays tested
+by a real game. Copy the `engine/` folder into a new project, or import from `engine/src`.
 
 ```bash
 npm run engine:demo    # play the demo game (Orb Rush) with hot reload
@@ -69,6 +70,15 @@ Every class takes a partial options object, and the defaults are Clean Sweep's v
 The world is flat (X/Z). Things that move are circles (`Mover`), and things that block are
 axis-aligned boxes (`AABB[]`), plus an optional `TileGrid` for walls laid out on a grid. You can
 change `world.boxes` at runtime, for example to remove a wall once a door opens.
+
+## How Clean Sweep uses it
+
+- `Engine` runs the frame loop. `engine.scene` is swapped to each building's scene when a level loads.
+- `Mover` is the roomba. `Game` exposes `px`/`pz`/`vx`/`vz`/`yaw` as getters over it, and upgrades set `mover.o.maxSpeed`.
+- Walls come from a `TileGrid` over the room grid. Furniture and secret doors are `boxes`, and secret doors are removed from the array when they open.
+- `FollowCamera.track()` + `shake()` are called separately, so the battery-death zoom can move the camera in between.
+- `Sfx extends Synth` adds the manor's sounds. Positional sounds pass an `AudioNode` as the last argument of `tone()`/`noise()`.
+- `Popups` reuses the React popup layer with the `cs-popup` CSS class.
 
 ## Not included
 

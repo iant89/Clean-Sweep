@@ -71,8 +71,8 @@ export class Synth {
     this.droneOsc.frequency.setTargetAtTime(90 + pitch * 60, t, 0.1);
   }
 
-  /** One enveloped oscillator note. `slide` bends the pitch by that many Hz over the note. */
-  tone(freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.3, slide = 0, delay = 0, pan = 0) {
+  /** One enveloped oscillator note. `slide` bends the pitch by that many Hz; `out` is a pan or a node. */
+  tone(freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.3, slide = 0, delay = 0, out: number | AudioNode = 0) {
     if (!this.ctx || !this.master) return;
     const t = this.ctx.currentTime + delay;
     const o = this.ctx.createOscillator();
@@ -83,13 +83,13 @@ export class Synth {
     g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(this.out(pan));
+    o.connect(g).connect(this.route(out));
     o.start(t);
     o.stop(t + dur + 0.05);
   }
 
   /** A burst of filtered noise (thumps, whooshes, crackles). */
-  noise(dur: number, freq: number, vol = 0.3, delay = 0, type: BiquadFilterType = 'lowpass', pan = 0) {
+  noise(dur: number, freq: number, vol = 0.3, delay = 0, type: BiquadFilterType = 'lowpass', out: number | AudioNode = 0) {
     if (!this.ctx || !this.master || !this.noiseBuf) return;
     const t = this.ctx.currentTime + delay;
     const s = this.ctx.createBufferSource();
@@ -100,7 +100,7 @@ export class Synth {
     const g = this.ctx.createGain();
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    s.connect(f).connect(g).connect(this.out(pan));
+    s.connect(f).connect(g).connect(this.route(out));
     s.start(t, Math.random());
     s.stop(t + dur + 0.05);
   }
@@ -119,7 +119,10 @@ export class Synth {
   click() { this.tone(700, 0.05, 'square', 0.08); }
   deny() { this.tone(200, 0.15, 'square', 0.12, -40); }
 
-  private out(pan: number): AudioNode {
+  /** `out` is a stereo pan (-1..1) or a node to play into (e.g. a positional bus). */
+  protected route(out: number | AudioNode): AudioNode {
+    if (typeof out !== 'number') return out;
+    const pan = out;
     if (!pan || !this.ctx || !this.ctx.createStereoPanner) return this.master!;
     const p = this.ctx.createStereoPanner();
     p.pan.value = pan;

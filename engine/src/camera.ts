@@ -64,16 +64,22 @@ export class FollowCamera {
   snap(x: number, z: number) {
     this.focus.set(x, 0, z);
     this.camera.position.copy(this.positionFor(this.focus));
-    this.camera.lookAt(this.focus.x, 0, this.focus.z - this.o.lookAhead);
+    this.lookAtFocus();
   }
 
   update(dt: number, x: number, z: number, vx = 0, vz = 0, boost = false) {
+    this.track(dt, x, z, vx, vz, boost);
+    this.shake(dt);
+  }
+
+  /** Follow and FOV without shake: lets a game nudge the camera (zooms, cutscene blends) before calling shake(). */
+  track(dt: number, x: number, z: number, vx = 0, vz = 0, boost = false) {
     const o = this.o;
     const k = dampK(o.followRate, dt);
     this.focus.x += (x + vx * o.lead - this.focus.x) * k;
     this.focus.z += (z + vz * o.lead - this.focus.z) * k;
     this.camera.position.copy(this.positionFor(this.focus));
-    this.camera.lookAt(this.focus.x, 0, this.focus.z - o.lookAhead);
+    this.lookAtFocus();
 
     const tf = o.fov + (boost ? o.boostFov : 0);
     if (Math.abs(this.fovNow - tf) > 0.01) {
@@ -82,8 +88,10 @@ export class FollowCamera {
       this.camera.updateProjectionMatrix();
       this.onProjection?.();
     }
-    this.shake(dt);
   }
+
+  /** Point the camera at the current focus (after moving it yourself). */
+  lookAtFocus() { this.camera.lookAt(this.focus.x, 0, this.focus.z - this.o.lookAhead); }
 
   /** Apply (and decay) screen shake on top of wherever the camera currently is. */
   shake(dt: number) {
