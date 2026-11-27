@@ -1454,6 +1454,58 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         finishItem(it);
         break;
       }
+      case 'crate': {
+        // wooden shipping crate: plank box with dark battens top and bottom
+        const h = f.h ?? 1.8;
+        sb.frame(f.x, f.z, a);
+        sb.box(M.woodMed, 0, 0, 0, w, h, d);
+        sb.box(M.woodDark, 0, h - 0.18, 0, w + 0.08, 0.18, d + 0.08);
+        sb.box(M.woodDark, 0, 0, 0, w + 0.08, 0.18, d + 0.08);
+        sb.box(M.woodDark, -w / 2 + 0.16, 0, d / 2 + 0.02, 0.32, h, 0.08);
+        sb.box(M.woodDark, w / 2 - 0.16, 0, d / 2 + 0.02, 0.32, h, 0.08);
+        sb.box(M.woodDark, -w / 2 + 0.16, 0, -d / 2 - 0.02, 0.32, h, 0.08);
+        sb.box(M.woodDark, w / 2 - 0.16, 0, -d / 2 - 0.02, 0.32, h, 0.08);
+        sb.reset();
+        fullBox(f, w, d);
+        break;
+      }
+      case 'barrel': {
+        // steel drum with black bands
+        sb.frame(f.x, f.z, 0);
+        sb.cyl(M.steel, 0, 0, 0, 0.7, 0.7, 2.2, 16);
+        sb.torus(M.black, 0, 0.55, 0, 0.72, 0.05);
+        sb.torus(M.black, 0, 1.65, 0, 0.72, 0.05);
+        sb.cyl(M.black, 0, 2.2, 0, 0.62, 0.62, 0.08, 16);
+        sb.reset();
+        addBox(f.x, f.z, 1.4, 1.4);
+        break;
+      }
+      case 'machine': {
+        // industrial machine: steel body, dark housing, chimney and a red pilot light
+        sb.frame(f.x, f.z, a);
+        sb.box(M.steel, 0, 0, 0, w, 1.8, d);
+        sb.box(M.black, 0, 1.8, 0, w * 0.7, 0.9, d * 0.7);
+        sb.cyl(M.steel, w * 0.25, 2.7, 0, 0.18, 0.18, 1.4, 10);
+        sb.cyl(M.gold, -w * 0.25, 1.8, 0, 0.12, 0.12, 1.0, 8);
+        sb.box(M.red, 0, 1.1, d / 2 + 0.03, 0.7, 0.45, 0.06);
+        sb.box(M.black, 0, 0, d / 2 + 0.02, w * 0.8, 0.25, 0.06);
+        sb.reset();
+        fullBox(f, w, d);
+        break;
+      }
+      case 'bed': {
+        // cabin bunk: dark frame, white mattress, blanket and pillow (head at -z)
+        sb.frame(f.x, f.z, a);
+        sb.box(M.woodDark, 0, 0, 0, w, 0.35, d);
+        for (const lx of [-w / 2 + 0.15, w / 2 - 0.15]) for (const lz of [-d / 2 + 0.15, d / 2 - 0.15]) sb.box(M.woodDark, lx, 0, lz, 0.15, 0.35, 0.15);
+        sb.box(M.woodDark, 0, 0.35, -d / 2 + 0.08, w, 1.1, 0.16);
+        sb.box(M.white, 0, 0.35, 0, w - 0.2, 0.35, d - 0.2);
+        sb.box(f.v === 1 ? M.blue : M.red, 0, 0.7, d * 0.15, w - 0.15, 0.12, d * 0.62);
+        sb.box(M.white, 0, 0.7, -d / 2 + 0.55, w - 0.6, 0.2, 0.75);
+        sb.reset();
+        fullBox(f, w, d);
+        break;
+      }
     }
   }
   const statics = new THREE.Group();

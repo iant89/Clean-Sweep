@@ -111,7 +111,7 @@ export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, o
               <li>✨ Get a room to <b>100%</b> for bonus <b className="text-amber-300">coins</b> & points.</li>
               <li>🔋 Battery drains as you drive. 🗑️ A full bin stops cleaning. Return to the <b className="text-emerald-300">dock</b> to charge & empty.</li>
               <li>🛒 Spend coins on upgrades while docked. Max them all to trade up to a better machine: mop bot, shop vac, floor scrubber…</li>
-              <li>🚚 Get every room of a building spotless to unlock the <b>next building</b>: a hunting lodge, a grand hotel, and on it goes.</li>
+              <li>🚚 Get every room of a building spotless to unlock the <b>next building</b>: a hunting lodge, a grand hotel, an ironworks, a warehouse, a cruise ship — and on it goes.</li>
               <li>👻 Beware: something keeps tracking mud back in…</li>
               <li>☀️ Every <b>5:00 AM</b> dawn pays a big bonus, then the curse winds the clock back to midnight and the mud returns. Keep sweeping as long as your battery lasts!</li>
             </ul>
