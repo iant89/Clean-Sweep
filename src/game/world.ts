@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  COLS, DOCK, DOORS, FURNITURE, Facing, FurnDef, ROOMS, ROWS, RUGS, TILE, WALL_H, WORLD_H, WORLD_W,
+  COLS, DOCK, DOORS, FURNITURE, Facing, FurnDef, ROOMS, ROWS, RUGS, SECRET_DOORS, TILE, WALL_H, WORLD_H, WORLD_W,
 } from './constants';
 import { makeRng } from './dirt';
 
@@ -584,6 +584,23 @@ const localM = (x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, sc = 1)
   new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(sc, sc, sc));
 const frameM = (x: number, z: number, ry: number, y = 0) => new THREE.Matrix4().makeRotationY(ry).setPosition(x, y, z);
 
+export interface SecretDoor {
+  room: number;
+  c: number;
+  r: number;
+  /** Tile index in the grid. */
+  idx: number;
+  group: THREE.Group;
+  box: Box;
+  /** Centre of the visible wall face (where the hint draft wisps out). */
+  fx: number;
+  fz: number;
+  /** Direction from the wall face into the room it's found from. */
+  nx: number;
+  /** Block filling the secret room so the overhead camera can't peek in before it's found. */
+  roof: THREE.Mesh<THREE.BoxGeometry, THREE.MeshLambertMaterial>;
+}
+
 export interface World {
   scene: THREE.Scene;
   grid: Int8Array;
@@ -593,7 +610,10 @@ export interface World {
   cut: CutUniforms;
   introGroup: THREE.Group;
   floorMat: THREE.MeshPhongMaterial;
-  lights: { light: THREE.PointLight; base: number }[];
+  /** Ceiling lights. bulbs: emissive materials of the visible bulbs fed by that light; flaky: how unreliable the bulb is. */
+  lights: { light: THREE.PointLight; base: number; bulbs: THREE.MeshLambertMaterial[]; flaky: number }[];
+  /** Fake walls hiding the secret rooms; `group` sinks into the floor once found. */
+  secrets: SecretDoor[];
   ambient: THREE.AmbientLight;
   hemi: THREE.HemisphereLight;
   /** Grandfather clocks: position and pendulum phase (pendulum angle ~ sin(t*PI + phase)). */
@@ -659,9 +679,13 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array): World {
   return { M, portraits };
   };
   let { M, portraits } = makeMats(true);
+  const wallM = M, wallPortraits = portraits; // cutaway set, kept for the secret doors
 
   // ---- floor
-  const floorTex = floorTexture(grid);
+  // the floor texture treats the secret doorways as walls, so their wall-edge shading gives nothing away
+  const closedGrid = grid.slice();
+  for (const [c, r] of SECRET_DOORS) closedGrid[r * COLS + c] = -1;
+  const floorTex = floorTexture(closedGrid);
   const floorMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60, specular: 0x3a3a3a });
   floorMat.onBeforeCompile = (shader) => {
     shader.uniforms.uFloor = { value: floorTex };
@@ -1356,7 +1380,15 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   ceil.rotation.x = Math.PI / 2;
   ceil.position.set(WORLD_W / 2, WALL_H, WORLD_H / 2);
   introGroup.add(ceil);
-  const chand = (x: number, z: number, r: number) => {
+  const lights: World['lights'] = [];
+  const bulbMat = () => {
+    const m = M.flame.clone();
+    m.onBeforeCompile = M.flame.onBeforeCompile;
+    return m;
+  };
+  const chandBulbs = [0, 1, 2, 3].map(bulbMat);
+  const chand = (x: number, z: number, r: number, li: number) => {
+    const flame = chandBulbs[li];
     sb.frame(x, z, 0);
     sb.cyl(M.gold, 0, 3.4, 0, 0.03, 0.03, WALL_H - 3.4, 6);
     sb.torus(M.gold, 0, 3.3, 0, r, 0.05);
@@ -1364,11 +1396,11 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     for (let k = 0; k < 8; k++) {
       const an = (k / 8) * Math.PI * 2;
       sb.cyl(M.white, Math.cos(an) * r, 3.3, Math.sin(an) * r, 0.04, 0.04, 0.22, 6);
-      sb.sph(M.flame, Math.cos(an) * r, 3.6, Math.sin(an) * r, 0.06, 6);
+      sb.sph(flame, Math.cos(an) * r, 3.6, Math.sin(an) * r, 0.06, 6);
     }
     sb.reset();
   };
-  chand(44, 50, 1.2); chand(44, 14, 0.7); chand(44, 26, 0.7); chand(20, 12, 1.0); chand(72, 33, 1.2);
+  chand(44, 50, 1.2, 0); chand(44, 14, 0.7, 1); chand(44, 26, 0.7, 1); chand(20, 12, 1.0, 2); chand(72, 33, 1.2, 3);
   sb.build(introGroup);
   scene.add(introGroup);
 
@@ -1387,17 +1419,66 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   const moon = new THREE.DirectionalLight(0xb0c0ff, 0.9);
   moon.position.set(-30, 60, -20);
   scene.add(moon);
-  const lights: { light: THREE.PointLight; base: number }[] = [];
-  const pl = (x: number, y: number, z: number, int: number, dist: number) => {
-    const l = new THREE.PointLight(0xffb870, int, dist, 1.6);
+  const pl = (x: number, y: number, z: number, int: number, dist: number, bulbs: THREE.MeshLambertMaterial[], flaky = 1, color = 0xffb870) => {
+    const l = new THREE.PointLight(color, int, dist, 1.6);
     l.position.set(x, y, z);
     scene.add(l);
-    lights.push({ light: l, base: int });
+    lights.push({ light: l, base: int, bulbs, flaky });
   };
-  pl(44, 3.6, 50, 45, 26);
-  pl(44, 3.4, 18, 22, 20);
-  pl(20, 3.6, 12, 35, 22);
-  pl(72, 3.6, 33, 35, 22);
+  pl(44, 3.6, 50, 45, 26, [chandBulbs[0]]);
+  pl(44, 3.4, 18, 22, 20, [chandBulbs[1]]);
+  pl(20, 3.6, 12, 35, 22, [chandBulbs[2]]);
+  pl(72, 3.6, 33, 35, 22, [chandBulbs[3]]);
+
+  // ---- secret rooms: a single bare bulb on a cord (visible during play), the oldest bulbs in the house
+  const pendants = new THREE.Group();
+  const psb = new SB();
+  ROOMS.forEach((room, ri) => {
+    if (!room.secret) return;
+    const [c0, r0, w, h] = room.rect;
+    const x = (c0 + w / 2) * TILE, z = (r0 + h / 2) * TILE;
+    const bulb = bulbMat();
+    psb.cyl(M.black, x, 3.25, z, 0.015, 0.015, WALL_H - 3.25, 5);
+    psb.cyl(M.black, x, 3.12, z, 0.06, 0.07, 0.16, 8);
+    psb.sph(bulb, x, 3.0, z, 0.13, 10);
+    pl(x, 2.9, z, 14, 13, [bulb], 3.2, 0xffc890);
+    void ri;
+  });
+  psb.build(pendants);
+  scene.add(pendants);
+
+  // ---- secret doors: a wall block that looks like the rest, with a slightly crooked portrait as the tell
+  const secrets: SecretDoor[] = [];
+  for (const [c, r, key, side] of SECRET_DOORS) {
+    const group = new THREE.Group();
+    const ssb = new SB();
+    const cx = (c + 0.5) * TILE, cz = (r + 0.5) * TILE;
+    ssb.box(wallM.wainscot, cx, 0, cz, TILE, 1.3, TILE);
+    ssb.box(wallM.wallpaper, cx, 1.3, cz, TILE, WALL_H - 1.45, TILE);
+    ssb.box(wallM.cap, cx, WALL_H - 0.15, cz, TILE, 0.15, TILE);
+    // crooked little portrait on the visible face
+    const fx = cx + side * TILE / 2;
+    ssb.frame(fx, cz, side > 0 ? Math.PI / 2 : -Math.PI / 2);
+    const tilt = 0.13 * side;
+    ssb.box(wallM.gold, 0, 2.6 - 0.65 - 0.1, 0.03, 0.95, 1.3, 0.06, 0, 0, tilt);
+    ssb.place(new THREE.PlaneGeometry(0.75, 1.1), wallPortraits[(c + r) % wallPortraits.length], 0, 2.6, 0.065, 0, 0, tilt);
+    ssb.reset();
+    ssb.build(group);
+    scene.add(group);
+    const box: Box = { minX: c * TILE, maxX: (c + 1) * TILE, minZ: r * TILE, maxZ: (r + 1) * TILE };
+    boxes.push(box);
+    const room = ROOMS.findIndex((rm) => rm.key === key);
+    const [rc, rr, rw, rh] = ROOMS[room].rect;
+    // not cut away (it must never reveal the room) and drawn like the wall tops around it
+    // a solid block filling the room, so even where the cutaway slices the surrounding walls there's nothing to see
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(rw * TILE + 0.02, WALL_H, rh * TILE + 0.02),
+      new THREE.MeshLambertMaterial({ color: 0x17111a, transparent: true, opacity: 1 }),
+    );
+    roof.position.set((rc + rw / 2) * TILE, WALL_H / 2, (rr + rh / 2) * TILE);
+    scene.add(roof);
+    secrets.push({ room, c, r, idx: r * COLS + c, group, box, fx, fz: cz, nx: side, roof });
+  }
 
   const animate = (t: number, hours: number) => { for (const fn of animators) fn(t, hours); };
   const setMessState = (it: MessItem, tidy: boolean) => {
@@ -1408,5 +1489,5 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     it.tidy = tidy;
   };
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, ambient, hemi, clocks, soundSources, mess, setMessState, animate };
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, secrets, ambient, hemi, clocks, soundSources, mess, setMessState, animate };
 }

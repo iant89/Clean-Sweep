@@ -119,6 +119,7 @@ export default function HUD({
           <canvas ref={minimapRef} className="block w-[120px] sm:w-[176px] h-auto" style={{ imageRendering: 'pixelated', aspectRatio: '44 / 34' }} />
           <div className="text-[9px] sm:text-[10px] text-amber-100/70 text-center mt-1 font-semibold tracking-wide">
             ROOMS {hud.roomsCleared}/{hud.roomsTotal} · MANOR {Math.round(hud.overall * 100)}%
+            {hud.secretsFound > 0 && <> · 🗝️ {hud.secretsFound}/{hud.secretsTotal}</>}
           </div>
         </div>
       </div>

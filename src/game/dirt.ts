@@ -39,6 +39,8 @@ export class DirtMap {
   tex: THREE.DataTexture;
   dirty = false;
   touched = 0; // bitmask of rooms touched in last clean()
+  /** Rooms that count towards the manor totals (secret rooms join once they're found). */
+  counted = ROOMS.map((r) => !r.secret);
 
   constructor(public grid: Int8Array) {
     this.tex = new THREE.DataTexture(this.data, DW, DH, THREE.RedFormat, THREE.UnsignedByteType);
@@ -77,6 +79,25 @@ export class DirtMap {
       const i0 = Math.max(0, Math.floor((b.minX - m) * DPU)), i1 = Math.min(DW - 1, Math.ceil((b.maxX + m) * DPU));
       const j0 = Math.max(0, Math.floor((b.minZ - m) * DPU)), j1 = Math.min(DH - 1, Math.ceil((b.maxZ + m) * DPU));
       for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) this.mask[j * DW + i] = 0;
+    }
+  }
+
+  /** Open (recompute from the grid, ignoring furniture) or close (mask out) a single floor tile. */
+  setTileMask(c: number, r: number, open: boolean) {
+    const g = this.grid, margin = 0.22;
+    for (let j = r * TILE * DPU; j < (r + 1) * TILE * DPU; j++) {
+      const lz = (j + 0.5) / DPU - r * TILE;
+      for (let i = c * TILE * DPU; i < (c + 1) * TILE * DPU; i++) {
+        const idx = j * DW + i;
+        if (!open) { this.mask[idx] = 0; continue; }
+        const lx = (i + 0.5) / DPU - c * TILE;
+        let ok = 1;
+        if (lx < margin && g[r * COLS + c - 1] < 0) ok = 0;
+        else if (lx > TILE - margin && g[r * COLS + c + 1] < 0) ok = 0;
+        else if (lz < margin && g[(r - 1) * COLS + c] < 0) ok = 0;
+        else if (lz > TILE - margin && g[(r + 1) * COLS + c] < 0) ok = 0;
+        this.mask[idx] = ok;
+      }
     }
   }
 
@@ -258,13 +279,13 @@ export class DirtMap {
 
   overall() {
     let s = 0, t = 0;
-    for (let i = 0; i < ROOMS.length; i++) { s += this.sum[i]; t += this.total[i]; }
+    for (let i = 0; i < ROOMS.length; i++) if (this.counted[i]) { s += this.sum[i]; t += this.total[i]; }
     return t > 0 ? 1 - s / t : 1;
   }
 
   totalUnits() {
     let t = 0;
-    for (let i = 0; i < ROOMS.length; i++) t += this.sum[i];
+    for (let i = 0; i < ROOMS.length; i++) if (this.counted[i]) t += this.sum[i];
     return t / UNIT;
   }
 

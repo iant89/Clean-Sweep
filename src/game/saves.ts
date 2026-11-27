@@ -67,6 +67,10 @@ export interface RunSnapshot {
   messTidy: boolean[];
   tidyQueue: number[];
   dirtTotal: number[];
+  /** Rooms visited (older saves: none). */
+  explored?: boolean[];
+  /** Secret doors found (older saves: none). */
+  secrets?: boolean[];
   /** Dirt texture bytes, zero-run-length encoded then base64. */
   dirt: string;
   dirtLen: number;

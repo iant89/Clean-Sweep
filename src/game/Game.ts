@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  CLEAR_THRESHOLD, COLS, DOCK, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey,
+  CLEAR_THRESHOLD, COLS, DOCK, NIGHT_LENGTH, ROOMBA_R, ROOMS, ROWS, TILE, UPGRADES, UpKey, WALL_H,
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { buildGrid, buildWorld, makeBlobTexture, MessItem, MessPart, PART_ANIM, World } from './world';
@@ -43,6 +43,8 @@ export interface HudState {
   upgrades: Record<UpKey, number>;
   turbo: boolean;
   homeHint: boolean;
+  secretsFound: number;
+  secretsTotal: number;
 }
 
 export interface GameOverInfo {
@@ -70,6 +72,7 @@ export interface GameCallbacks {
 interface Coin { x: number; z: number; active: boolean; phase: number }
 interface Popup { el: HTMLDivElement; x: number; y: number; z: number; age: number; life: number }
 export type DevCheat =
+  | 'secrets'
   | 'coins100' | 'coins1000' | 'battery' | 'infBattery' | 'emptyBin' | 'maxUpgrades'
   | 'cleanRoom' | 'cleanAll' | 'ghost' | 'hour' | 'dawn' | 'freezeTime' | 'dock';
 
@@ -138,6 +141,15 @@ export class Game {
   nextGhost = 40;
   hourAnnounced = 0;
   curRoom = -1;
+  /** Rooms the roomba has driven into this run; the rest stay blurred on the minimap. */
+  explored: boolean[] = ROOMS.map(() => false);
+  /** Per world.secrets entry: found (wall gone or going). */
+  secretFound: boolean[] = [];
+  /** Per secret: seconds of pushing against it / sinking animation progress 0..1. */
+  secretPush: number[] = [];
+  secretAnim: number[] = [];
+  secretHintT = 0;
+  private bulbs: { level: number; target: number; hold: number; burst: number; burstT: number; burstV: number; dip: number }[] = [];
   turbo = false;
   homeHint = false;
   // developer cheats (only reachable through the ?devmode=true menu)
@@ -217,6 +229,10 @@ export class Game {
       const id = this.grid[r * COLS + c];
       if (id >= 0) this.roomTiles[id].push(r * COLS + c);
     }
+    this.secretFound = this.world.secrets.map(() => false);
+    this.secretPush = this.world.secrets.map(() => 0);
+    this.secretAnim = this.world.secrets.map(() => 0);
+    for (const sd of this.world.secrets) this.dirt.setTileMask(sd.c, sd.r, false);
     this.distField = this.bfs();
 
     this.dust = new Particles(700, false);
@@ -382,8 +398,14 @@ export class Game {
         break;
       }
       case 'cleanAll':
-        for (let i = 0; i < ROOMS.length; i++) if (!this.cleared[i]) this.clearRoom(i);
+        for (let i = 0; i < ROOMS.length; i++) if (!this.cleared[i] && this.dirt.counted[i]) this.clearRoom(i);
         break;
+      case 'secrets': {
+        const left = this.world.secrets.map((_, k) => k).filter((k) => !this.secretFound[k]);
+        if (!left.length) return 'All secrets already found';
+        left.forEach((k) => this.discoverSecret(k));
+        break;
+      }
       case 'ghost': if (!this.ghost) this.nextGhost = 0; break;
       case 'hour': this.time = Math.min(NIGHT_LENGTH - 1, this.time + NIGHT_LENGTH / 5); break;
       case 'dawn': this.time = Math.max(this.time, NIGHT_LENGTH - 5); break;
@@ -439,6 +461,8 @@ export class Game {
       messTidy: this.world.mess.map((m) => m.tidy),
       tidyQueue,
       dirtTotal: Array.from(this.dirt.total),
+      explored: [...this.explored],
+      secrets: [...this.secretFound],
       dirt: encodeBytes(this.dirt.data),
       dirtLen: this.dirt.data.length,
     };
@@ -449,7 +473,7 @@ export class Game {
       time: this.time,
       score: Math.round(this.score),
       coins: this.coins,
-      roomsCleared: this.cleared.filter(Boolean).length,
+      roomsCleared: this.roomsCleanNow(),
       overall: this.dirt.overall(),
     };
   }
@@ -496,6 +520,9 @@ export class Game {
     this.hourAnnounced = run.hourAnnounced;
     this.fullHinted = true;
     this.dockHinted = true;
+    this.explored = ROOMS.map((_, i) => !!run.explored?.[i]);
+    this.world.secrets.forEach((_, k) => this.setSecret(k, !!run.secrets?.[k]));
+    this.distField = this.bfs();
 
     // dirt: restore the texture and recompute each room's running sum from it
     const d = this.dirt;
@@ -575,6 +602,8 @@ export class Game {
     this.tidyQueue = [];
     this.tidyDelay = 0;
     this.tidy = null;
+    this.world.secrets.forEach((_, k) => this.setSecret(k, false));
+    this.distField = this.bfs();
     this.dirt.generate(Math.floor(Math.random() * 1e6));
     this.binBase = Math.max(70, Math.min(220, this.dirt.totalUnits() * 0.12));
     this.time = 0;
@@ -605,6 +634,7 @@ export class Game {
     this.nextGhost = 38;
     this.hourAnnounced = 0;
     this.curRoom = -1;
+    this.explored = ROOMS.map(() => false);
     this.px = DOCK.x; this.pz = DOCK.z; this.vx = 0; this.vz = 0; this.yaw = Math.PI;
     this.sq = this.sqv = this.hop = this.hopV = 0;
     this.trauma = 0;
@@ -615,7 +645,7 @@ export class Game {
     for (const c of this.coinsList) c.active = false;
     // instant-gratification coins in front of the dock
     this.placeCoin(44, 58.5); this.placeCoin(41.5, 55); this.placeCoin(46.5, 51.5);
-    ROOMS.forEach((_, i) => { this.spawnCoin(i); this.spawnCoin(i); });
+    ROOMS.forEach((r, i) => { for (let n = r.secret ? 5 : 2; n > 0; n--) this.spawnCoin(i); });
     this.world.roomba.group.position.set(this.px, 0, this.pz);
     this.world.roomba.group.rotation.y = this.yaw;
   }
@@ -667,12 +697,115 @@ export class Game {
         const nc = c + dx, nr = r + dy;
         if (nc < 0 || nr < 0 || nc >= COLS || nr >= ROWS) continue;
         const j = nr * COLS + nc;
-        if (this.grid[j] < 0 || d[j] >= 0) continue;
+        if (this.grid[j] < 0 || d[j] >= 0 || this.closedSecret(j)) continue;
         d[j] = d[i] + 1;
         q.push(j);
       }
     }
     return d;
+  }
+
+  private closedSecret(idx: number) {
+    return this.world.secrets.some((sd, k) => sd.idx === idx && !this.secretFound[k]);
+  }
+
+  /** Total of the regular (non-secret) rooms plus any secret rooms found so far. */
+  private roomCount() {
+    return ROOMS.filter((r, i) => !r.secret || this.dirt.counted[i]).length;
+  }
+
+  private roomsCleanNow() {
+    return this.cleared.filter((c, i) => c && (!ROOMS[i].secret || this.dirt.counted[i])).length;
+  }
+
+  // ------------------------------------------------------------ secret rooms
+  /** Snap a secret door open or shut (no fanfare) — used on reset and when loading a save. */
+  private setSecret(k: number, found: boolean) {
+    const sd = this.world.secrets[k];
+    this.secretFound[k] = found;
+    this.secretAnim[k] = found ? 1 : 0;
+    this.secretPush[k] = 0;
+    sd.group.position.y = found ? -WALL_H - 0.2 : 0;
+    sd.group.position.x = 0;
+    sd.group.visible = !found;
+    sd.roof.visible = !found;
+    sd.roof.material.opacity = 1;
+    const bi = this.world.boxes.indexOf(sd.box);
+    if (found && bi >= 0) this.world.boxes.splice(bi, 1);
+    if (!found && bi < 0) this.world.boxes.push(sd.box);
+    this.dirt.setTileMask(sd.c, sd.r, found);
+    this.dirt.counted[sd.room] = found;
+  }
+
+  private discoverSecret(k: number) {
+    const sd = this.world.secrets[k];
+    this.secretFound[k] = true;
+    this.dirt.counted[sd.room] = true;
+    this.distField = this.bfs();
+    const bonus = Math.round(1500 * this.mult), coins = 25;
+    this.score += bonus;
+    this.coins += coins;
+    this.coinsEarned += coins;
+    this.addTrauma(0.55);
+    this.sfx.noise(1.4, 140, 0.35);
+    this.sfx.noise(0.5, 900, 0.12, 0.05, 'bandpass');
+    [392, 523, 659, 784, 1047].forEach((f, i) => this.sfx.tone(f, 0.45, 'triangle', 0.13, 0, 0.5 + i * 0.1));
+    this.cb.onToast(`🗝️ SECRET ROOM FOUND: ${ROOMS[sd.room].name.toUpperCase()}! +${coins}🪙 +${bonus}`, 'big');
+    this.popup('🗝️ SECRET!', '#ffd84d', 1.8, 1.5);
+    for (let n = 0; n < 50; n++) {
+      this.dust.spawn(sd.fx + sd.nx * 0.2, Math.random() * 3, sd.fz + (Math.random() - 0.5) * 2,
+        sd.nx * (1 + Math.random() * 3), Math.random() * 0.8, (Math.random() - 0.5) * 2, 0.6, 0.55, 0.48, 0.25, 1.4, -0.5);
+    }
+    this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 2);
+  }
+
+  private updateSecrets(dt: number) {
+    const R = ROOMBA_R;
+    this.secretHintT -= dt;
+    const hint = this.secretHintT <= 0;
+    if (hint) this.secretHintT = 0.25;
+    this.world.secrets.forEach((sd, k) => {
+      if (this.secretFound[k]) {
+        // sink the fake wall into the floor, juddering as it goes
+        if (this.secretAnim[k] < 1) {
+          this.secretAnim[k] = Math.min(1, this.secretAnim[k] + dt / 1.6);
+          const u = this.secretAnim[k];
+          sd.group.position.y = -(WALL_H + 0.2) * u * u;
+          sd.group.position.x = Math.sin(u * 90) * 0.04 * (1 - u);
+          if (Math.random() < 0.5) {
+            this.dust.spawn(sd.fx + sd.nx * 0.15, 0.05, sd.fz + (Math.random() - 0.5) * TILE,
+              sd.nx * (0.5 + Math.random()), 0.6 + Math.random(), (Math.random() - 0.5), 0.55, 0.5, 0.45, 0.22, 1.1, -0.3);
+          }
+          if (u > 0.55) {
+            const bi = this.world.boxes.indexOf(sd.box);
+            if (bi >= 0) { this.world.boxes.splice(bi, 1); this.dirt.setTileMask(sd.c, sd.r, true); }
+          }
+          sd.roof.material.opacity = 1 - Math.min(1, u * 1.6);
+          if (u >= 1) { sd.group.visible = false; sd.roof.visible = false; }
+        }
+        return;
+      }
+      const b = sd.box;
+      const cx = Math.max(b.minX, Math.min(this.px, b.maxX)), cz = Math.max(b.minZ, Math.min(this.pz, b.maxZ));
+      const d = Math.hypot(this.px - cx, this.pz - cz);
+      // a faint draft puffs dust out from under the fake wall when you're nearby
+      if (hint && Math.abs(this.px - sd.fx) < 12 && Math.abs(this.pz - sd.fz) < 10 && Math.random() < 0.6) {
+        this.dust.spawn(sd.fx + sd.nx * 0.1, 0.04, sd.fz + (Math.random() - 0.5) * 1.6,
+          sd.nx * (0.25 + Math.random() * 0.35), 0.05 + Math.random() * 0.15, (Math.random() - 0.5) * 0.2, 0.62, 0.58, 0.52, 0.12, 1.6, -0.05);
+      }
+      // keep pushing into it and something gives
+      const inp = this.input();
+      const pushing = d < R + 0.3 && inp.m > 0.3 && (cx - this.px) * inp.x + (cz - this.pz) * inp.z > 0.6 * Math.max(d, 1e-3) * inp.m;
+      if (pushing) {
+        this.secretPush[k] += dt;
+        sd.group.position.x = (Math.random() - 0.5) * 0.04 * Math.min(1, this.secretPush[k] * 2);
+        if (Math.random() < dt * 8) this.sfx.noise(0.12, 220, 0.06);
+        if (this.secretPush[k] > 0.7) { sd.group.position.x = 0; this.discoverSecret(k); }
+      } else {
+        this.secretPush[k] = Math.max(0, this.secretPush[k] - dt * 0.5);
+        sd.group.position.x = 0;
+      }
+    });
   }
 
   private resizeObs?: ResizeObserver;
@@ -797,7 +930,7 @@ export class Game {
     this.camera.lookAt(44, 0, 34);
     this.world.cut.uRoomba.value.set(this.px, 0, this.pz);
     // flicker lights
-    this.flicker();
+    this.flicker(dt);
   }
 
   // ---- tidy-up cutscene: out-of-place objects float back to where they belong
@@ -846,7 +979,7 @@ export class Game {
   private updateTidy(dt: number) {
     const td = this.tidy;
     if (!td) return;
-    this.flicker();
+    this.flicker(dt);
     td.t += dt;
     // camera glides to each item in turn, then back to the roomba
     const wantPos = new THREE.Vector3(), wantLook = new THREE.Vector3();
@@ -997,10 +1130,39 @@ export class Game {
     });
   }
 
-  private flicker() {
+  /**
+   * Old incandescent bulbs: each one wanders slowly between brightness levels, now and then
+   * stutters through a burst of quick flickers, and occasionally browns out and struggles back.
+   */
+  private flicker(dt: number) {
     const t = performance.now() / 1000;
     this.world.lights.forEach((l, i) => {
-      l.light.intensity = l.base * (0.88 + 0.08 * Math.sin(t * 7 + i * 3) + 0.04 * Math.sin(t * 23 + i));
+      const s = this.bulbs[i] ??= { level: 0.9, target: 0.9, hold: Math.random(), burst: 0, burstT: 0, burstV: 1, dip: 0 };
+      s.hold -= dt;
+      if (s.hold <= 0) {
+        s.target = 0.7 + Math.random() * 0.34;
+        s.hold = 0.35 + Math.random() * 2.2;
+      }
+      s.level += (s.target - s.level) * Math.min(1, dt * 2.2);
+      let k = s.level;
+      if (s.burst <= 0 && Math.random() < dt * 0.1 * l.flaky) { s.burst = 0.12 + Math.random() * 0.6; s.burstT = 0; }
+      if (s.burst > 0) {
+        s.burst -= dt;
+        s.burstT -= dt;
+        if (s.burstT <= 0) {
+          s.burstT = 0.03 + Math.random() * 0.08;
+          s.burstV = Math.random() < 0.4 ? 0.05 + Math.random() * 0.25 : 0.6 + Math.random() * 0.45;
+        }
+        k *= s.burstV;
+      }
+      if (s.dip <= 0 && Math.random() < dt * 0.03 * l.flaky) s.dip = 1;
+      if (s.dip > 0) {
+        s.dip = Math.max(0, s.dip - dt * 1.3);
+        k *= 1 - 0.6 * Math.sin(s.dip * Math.PI);
+      }
+      k *= 0.97 + 0.03 * Math.sin(t * 37 + i * 5);
+      l.light.intensity = l.base * k;
+      for (const m of l.bulbs) m.emissiveIntensity = 0.15 + 0.95 * k;
     });
   }
 
@@ -1017,7 +1179,7 @@ export class Game {
   private updateIntro(dt: number) {
     this.introT += dt;
     const t = this.introT;
-    this.flicker();
+    this.flicker(dt);
     const capAt = (time: number, stage: number, text: string | null, big = false) => {
       if (t >= time && this.introStage < stage) { this.introStage = stage; this.cb.onCaption(text, big); }
     };
@@ -1107,7 +1269,7 @@ export class Game {
   }
 
   private updatePlay(dt: number) {
-    this.flicker();
+    this.flicker(dt);
     // ending sequences
     if (this.ending) {
       this.endTimer -= dt;
@@ -1311,7 +1473,9 @@ export class Game {
     const tc = Math.floor(this.px / TILE), tr = Math.floor(this.pz / TILE);
     const rid = this.grid[tr * COLS + tc];
     if (rid >= 0 && rid !== this.curRoom) this.curRoom = rid;
+    if (rid >= 0) this.explored[rid] = true;
 
+    this.updateSecrets(dt);
     this.updateGhost(dt);
     this.updateArrow(dt);
     this.followCamera(dt);
@@ -1412,7 +1576,7 @@ export class Game {
       this.tidyDelay = Math.max(this.tidyDelay, 1.4);
     }
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1.5);
-    if (this.cleared.every(Boolean)) {
+    if (!ROOMS[i].secret && ROOMS.every((r, k) => r.secret || this.cleared[k])) {
       this.score += 5000;
       this.coins += 100;
       this.coinsEarned += 100;
@@ -1466,7 +1630,7 @@ export class Game {
     this.nextGhost -= dt;
     if (!this.ghost && this.nextGhost <= 0) {
       this.nextGhost = Math.max(16, 34 - this.time * 0.06) + Math.random() * 8;
-      const candidates = ROOMS.map((_, i) => i).filter((i) => i !== this.curRoom);
+      const candidates = ROOMS.map((_, i) => i).filter((i) => i !== this.curRoom && (!ROOMS[i].secret || this.dirt.counted[i]));
       const clearedC = candidates.filter((i) => this.cleared[i]);
       const pool = clearedC.length && Math.random() < 0.75 ? clearedC : candidates;
       const room = pool[Math.floor(Math.random() * pool.length)];
@@ -1699,14 +1863,25 @@ export class Game {
       roomName: ROOMS[rid].name,
       roomPct: pct,
       roomCleared: this.cleared[rid],
-      roomsCleared: this.cleared.filter(Boolean).length,
-      roomsTotal: ROOMS.length,
+      roomsCleared: this.roomsCleanNow(),
+      roomsTotal: this.roomCount(),
+      secretsFound: this.secretFound.filter(Boolean).length,
+      secretsTotal: this.secretFound.length,
       docked: this.docked,
       overall: this.dirt.overall(),
       upgrades: { ...this.up },
       turbo: this.turbo,
       homeHint: this.homeHint,
     });
+  }
+
+  private fog: { big: HTMLCanvasElement; small: HTMLCanvasElement; tiny: HTMLCanvasElement } | null = null;
+  private fogCanvas(w: number, h: number) {
+    if (!this.fog || this.fog.big.width !== w) {
+      const mk = (cw: number, ch: number) => { const c = document.createElement('canvas'); c.width = cw; c.height = ch; return c; };
+      this.fog = { big: mk(w, h), small: mk(Math.ceil(w / 3), Math.ceil(h / 3)), tiny: mk(Math.ceil(w / 8), Math.ceil(h / 8)) };
+    }
+    return this.fog;
   }
 
   private drawMinimap() {
@@ -1717,19 +1892,57 @@ export class Game {
     const g = cv.getContext('2d');
     if (!g) return;
     g.clearRect(0, 0, cv.width, cv.height);
+    // rooms not yet driven into are drawn blurry (rendered small, then scaled back up smoothly);
+    // secret rooms don't show at all until their fake wall is found
+    const fog = this.fogCanvas(cv.width, cv.height);
+    const fg = fog.big.getContext('2d');
+    if (fg) fg.clearRect(0, 0, fog.big.width, fog.big.height);
+    let anyFog = false;
     for (let i = 0; i < ROOMS.length; i++) {
-      const pct = this.cleared[i] ? 1 : Math.min(1, this.dirt.cleanliness(i) / CLEAR_THRESHOLD);
-      const hue = Math.round(pct * 120);
-      g.fillStyle = this.cleared[i] ? 'rgba(80,255,170,0.85)' : `hsla(${hue}, 75%, ${30 + pct * 15}%, 0.85)`;
+      if (ROOMS[i].secret && !this.dirt.counted[i]) continue;
+      const known = this.explored[i];
+      const tg = known ? g : fg;
+      if (!tg) continue;
+      if (known) {
+        const pct = this.cleared[i] ? 1 : Math.min(1, this.dirt.cleanliness(i) / CLEAR_THRESHOLD);
+        const hue = Math.round(pct * 120);
+        tg.fillStyle = this.cleared[i] ? 'rgba(80,255,170,0.85)' : `hsla(${hue}, 75%, ${30 + pct * 15}%, 0.85)`;
+      } else {
+        anyFog = true;
+        tg.fillStyle = 'rgba(150,140,185,0.75)';
+      }
       for (const idx of this.roomTiles[i]) {
+        if (!known && this.closedSecret(idx)) continue;
         const c = idx % COLS, r = (idx - c) / COLS;
-        g.fillRect(c * S, r * S, S, S);
+        tg.fillRect(c * S, r * S, S, S);
+      }
+    }
+    if (anyFog) {
+      const sm = fog.small.getContext('2d'), sm2 = fog.tiny.getContext('2d');
+      if (sm && sm2) {
+        sm.clearRect(0, 0, fog.small.width, fog.small.height);
+        sm.imageSmoothingEnabled = true;
+        sm.drawImage(fog.big, 0, 0, fog.small.width, fog.small.height);
+        sm2.clearRect(0, 0, fog.tiny.width, fog.tiny.height);
+        sm2.imageSmoothingEnabled = true;
+        sm2.drawImage(fog.small, 0, 0, fog.tiny.width, fog.tiny.height);
+        g.save();
+        g.imageSmoothingEnabled = true;
+        g.imageSmoothingQuality = 'high';
+        g.globalAlpha = 0.85;
+        g.drawImage(fog.tiny, 0, 0, cv.width, cv.height);
+        g.restore();
       }
     }
     const sc = S / TILE;
-    // coins
+    // coins (only where you've been)
     g.fillStyle = '#ffd84d';
-    for (const c of this.coinsList) if (c.active) g.fillRect(c.x * sc - 1, c.z * sc - 1, 2, 2);
+    for (const c of this.coinsList) {
+      if (!c.active) continue;
+      const rid = this.grid[Math.floor(c.z / TILE) * COLS + Math.floor(c.x / TILE)];
+      if (rid >= 0 && !this.explored[rid]) continue;
+      g.fillRect(c.x * sc - 1, c.z * sc - 1, 2, 2);
+    }
     // dock
     g.fillStyle = '#35ff9a';
     g.fillRect(DOCK.x * sc - 3, DOCK.z * sc - 2, 6, 4);

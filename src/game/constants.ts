@@ -31,6 +31,8 @@ export interface RoomDef {
   dust: number; // base dust density
   trails: number;
   patches: number;
+  /** Hidden room: walled off behind a fake wall until the roomba finds it. */
+  secret?: boolean;
 }
 
 export const ROOMS: RoomDef[] = [
@@ -44,6 +46,18 @@ export const ROOMS: RoomDef[] = [
   { key: 'E', name: 'East Corridor', rect: [29, 22, 14, 4], floor: 'carpetH', dust: 0.55, trails: 4, patches: 2 },
   { key: 'C', name: 'Conservatory', rect: [1, 27, 14, 6], floor: 'terracotta', dust: 0.6, trails: 4, patches: 6 },
   { key: 'S', name: 'Study', rect: [29, 27, 14, 6], floor: 'greencarpet', dust: 0.45, trails: 4, patches: 3 },
+  // secret rooms (tucked in the dead space either side of the North Gallery)
+  { key: 'X', name: 'Forgotten Chapel', rect: [16, 12, 3, 5], floor: 'terracotta', dust: 1.0, trails: 3, patches: 5, secret: true },
+  { key: 'Y', name: 'Hidden Treasury', rect: [25, 12, 3, 5], floor: 'marble', dust: 1.0, trails: 3, patches: 5, secret: true },
+];
+
+/**
+ * Fake wall tiles that slide away when the roomba pushes against them: col,row,roomKey, and the
+ * x direction (-1 west / +1 east) of the wall face that's visible from the room you find it from.
+ */
+export const SECRET_DOORS: [number, number, string, -1 | 1][] = [
+  [15, 15, 'X', -1], // from the Dining Room
+  [28, 15, 'Y', 1], // from the Ballroom
 ];
 
 // col,row,w,h,roomKey
@@ -59,6 +73,7 @@ export const DOORS: [number, number, number, number, string][] = [
   [35, 11, 3, 1, 'B'],
   [35, 21, 3, 1, 'E'],
   [35, 26, 3, 1, 'E'],
+  ...SECRET_DOORS.map(([c, r, key]) => [c, r, 1, 1, key] as [number, number, number, number, string]),
 ];
 
 export type Facing = 'n' | 's' | 'e' | 'w';
@@ -180,6 +195,14 @@ export const FURNITURE: FurnDef[] = [
   { t: 'armchair', x: 81, z: 56.5, f: 'w' },
   { t: 'globe', x: 60, z: 56 },
   { t: 'books', x: 77, z: 62 },
+  // ---- Forgotten Chapel (secret, x 32..38, z 24..34)
+  { t: 'statue', x: 35, z: 25.4 },
+  { t: 'plant', x: 33.2, z: 32.8 },
+  { t: 'globe', x: 36.8, z: 32.6 },
+  // ---- Hidden Treasury (secret, x 50..56, z 24..34)
+  { t: 'statue', x: 53, z: 25.4 },
+  { t: 'pillar', x: 51.2, z: 32.8 },
+  { t: 'plant', x: 54.8, z: 32.8 },
 ];
 
 // Rugs drawn into floor texture: x0,z0,x1,z1 (world units), color scheme

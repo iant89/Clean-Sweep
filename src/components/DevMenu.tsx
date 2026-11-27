@@ -12,6 +12,7 @@ const ACTIONS: { cmd: DevCheat; label: string; toggle?: 'infBattery' | 'freezeTi
   { cmd: 'maxUpgrades', label: '⬆️ Max upgrades' },
   { cmd: 'cleanRoom', label: '✨ Clean this room' },
   { cmd: 'cleanAll', label: '🏆 Clean all rooms' },
+  { cmd: 'secrets', label: '🗝️ Reveal secret rooms' },
   { cmd: 'ghost', label: '👻 Spawn ghost' },
   { cmd: 'hour', label: '🕐 +1 hour' },
   { cmd: 'dawn', label: '☀️ Skip to dawn' },
