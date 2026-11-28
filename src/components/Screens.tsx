@@ -167,9 +167,10 @@ export interface StartScreenProps {
   onContinue: () => void;
   onLoadMenu: () => void;
   onDesigner: () => void;
+  onSettings: () => void;
 }
 
-export function StartScreen({ onPlay, isTouch, autosave, saveCount, muted, onMute, onContinue, onLoadMenu, onDesigner }: StartScreenProps) {
+export function StartScreen({ onPlay, isTouch, autosave, saveCount, muted, onMute, onContinue, onLoadMenu, onDesigner, onSettings }: StartScreenProps) {
   const scores = useMemo(() => loadScores(), []);
   const [panel, setPanel] = useState<InfoTab | null>(null);
   const closePanel = useCallback(() => setPanel(null), []);
@@ -196,6 +197,7 @@ export function StartScreen({ onPlay, isTouch, autosave, saveCount, muted, onMut
       id: 'scores', label: 'Hall of Fame', onSelect: () => setPanel('scores'),
       desc: scores.length ? <>Record: <span className="text-[var(--cs-ink-hi)]">{scores[0].score.toLocaleString()}</span> by {scores[0].name}</> : 'No records yet.',
     },
+    { id: 'settings', label: 'Settings', onSelect: onSettings, desc: 'Graphics quality, resolution, shadows, effects and volume.' },
     { id: 'designer', label: 'Level Designer', onSelect: onDesigner, desc: 'Draw your own building, furnish it, then playtest it.' },
   );
 
@@ -250,12 +252,13 @@ export function StartScreen({ onPlay, isTouch, autosave, saveCount, muted, onMut
 
 /* ================================================================== pause */
 
-export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, muted, hud, onDesigner, isTouch }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; muted: boolean; hud: HudState | null; onDesigner?: () => void; isTouch?: boolean }) {
+export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, onSettings, muted, hud, onDesigner, isTouch }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; onSettings: () => void; muted: boolean; hud: HudState | null; onDesigner?: () => void; isTouch?: boolean }) {
   const items: MenuEntry[] = [
     { id: 'resume', label: 'Resume', onSelect: onResume, desc: 'Back to work. The clock starts ticking again.' },
     { id: 'save', label: 'Save / Load', onSelect: onSaveMenu, desc: 'Write this shift to a slot, or load another one.' },
     { id: 'restart', label: 'Restart', confirm: 'Restart shift?', onSelect: onRestart, desc: 'Start this shift over from midnight. Current progress is lost.' },
     { id: 'sound', label: 'Sound', value: muted ? 'Off' : 'On', onSelect: onMute, desc: 'Toggle all game audio.' },
+    { id: 'settings', label: 'Settings', onSelect: onSettings, desc: 'Graphics quality, resolution, shadows, effects and volume.' },
   ];
   if (onDesigner) items.push({ id: 'designer', label: 'Level Editor', onSelect: onDesigner, desc: 'Abandon this playtest and go back to editing.' });
   items.push({ id: 'menu', label: 'Main Menu', onSelect: onMenu, desc: 'Progress is autosaved. Continue from the title screen any time.' });

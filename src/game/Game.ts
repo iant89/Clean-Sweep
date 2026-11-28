@@ -4,6 +4,7 @@ import {
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS, LevelDef } from './levels';
+import { Settings, applyEngineGraphics, applyWorldGraphics, loadSettings } from './settings';
 import { setMachineLook, buildGrid, buildWorld, enableShadows, applyEnvironment, ShadowCache, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
@@ -133,6 +134,8 @@ export class Game {
   dust: Particles;
   glow: Particles;
   sfx = new Sfx();
+  /** Player settings (graphics, audio); change them through applySettings(). */
+  settings: Settings = loadSettings();
   phase: Phase = 'menu';
   cb: GameCallbacks;
   container: HTMLElement;
@@ -254,19 +257,10 @@ export class Game {
     this.cb = cb;
     this.engine = new Engine(container, {
       update: this.frame,
-      adaptive: () => this.phase === 'playing',
+      adaptive: () => this.phase === 'playing' && this.settings.autoQuality,
       onBlur: this.onBlur,
       fov: 50, near: 0.1, far: 220,
       shadows: true,
-      exposure: 1.3,
-      postfx: {
-        bloom: { strength: 0.4, radius: 0.5, threshold: 0.95 },
-        vignette: 0.38,
-        grain: 0.03,
-        aberration: 1,
-        shadowTint: [0.0, 0.006, 0.022],
-        highlightTint: [0.022, 0.01, -0.006],
-      },
     });
     this.isTouch = this.engine.isTouch;
     this.renderer = this.engine.renderer;
@@ -313,6 +307,8 @@ export class Game {
     this.resetRun();
     this.setRoombaPower(0);
     window.addEventListener('pagehide', this.onPageHide);
+    applyEngineGraphics(this.engine, this.settings);
+    this.sfx.setVolume(this.settings.volume);
     this.engine.start(); // warms up shaders, then runs frame() every animation frame
   }
 
@@ -344,6 +340,8 @@ export class Game {
     this.world = buildWorld(this.dirt.tex, this.grid, this.dirt.wetTex);
     enableShadows(this.world, this.renderer);
     applyEnvironment(this.world, this.renderer);
+    applyWorldGraphics(this.world, this.settings);
+    this.renderer.shadowMap.enabled = this.settings.shadows !== 'off'; // enableShadows switched it on
     this.shadowCache = new ShadowCache(this.world);
     setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
@@ -521,6 +519,15 @@ export class Game {
   openShop() { if (this.phase === 'playing' && this.docked && !this.ending) { this.setPhase('shop'); this.sfx.click(); this.sfx.hum(0, 0); this.pushHud(); } }
   closeShop() { if (this.phase === 'shop') { this.setPhase('playing'); this.sfx.click(); this.autosave(); } }
   toMenu() { this.autosave(); this.cb.onCaption(null); this.resetRun(); this.setRoombaPower(0); this.setPhase('menu'); this.sfx.hum(0, 0); }
+  /** Apply new settings live (from the settings menu). */
+  applySettings(s: Settings) {
+    this.settings = s;
+    applyEngineGraphics(this.engine, s);
+    applyWorldGraphics(this.world, s);
+    this.shadowCache.invalidate();
+    this.sfx.setVolume(s.volume);
+  }
+
   toggleMute() { this.sfx.setMuted(!this.sfx.muted); this.cb.onMute(this.sfx.muted); }
   setJoystick(x: number, y: number, active: boolean) { this.controls.setJoystick(x, y, active); }
 

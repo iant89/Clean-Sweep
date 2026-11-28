@@ -56,6 +56,12 @@ export class Synth {
     if (this.ctx.state === 'suspended') this.ctx.resume();
   }
 
+  /** Master volume 0..1 (ramps smoothly; stays silent while muted). */
+  setVolume(v: number) {
+    this.volume = Math.min(1, Math.max(0, v));
+    if (this.master && this.ctx && !this.muted) this.master.gain.setTargetAtTime(this.volume, this.ctx.currentTime, 0.05);
+  }
+
   setMuted(m: boolean) {
     this.muted = m;
     try { localStorage.setItem(this.storageKey, m ? '1' : '0'); } catch { /* storage blocked */ }

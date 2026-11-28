@@ -40,6 +40,12 @@ export class Engine {
   private particles: Particles[] = [];
   /** Active post-processing chain, or null for a plain tone-mapped render. */
   post: PostFx | null = null;
+  /** Device pixel ratio cap (lower on touch devices). */
+  private basePixelRatio: number;
+  /** Player's render-resolution choice (0.5 .. 1). */
+  private renderScale = 1;
+  /** Extra reduction applied automatically when frames are slow (1 = none). */
+  private adaptScale = 1;
   private raf = 0;
   private last = 0;
   private slowFrames = 0;
@@ -50,7 +56,8 @@ export class Engine {
   constructor(readonly container: HTMLElement, private opts: EngineOptions) {
     this.isTouch = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
     this.renderer = new THREE.WebGLRenderer({ antialias: !this.isTouch || window.devicePixelRatio < 2, powerPreference: 'high-performance' });
-    this.pixelRatio = Math.min(window.devicePixelRatio, this.isTouch ? 1.5 : 2);
+    this.basePixelRatio = Math.min(window.devicePixelRatio, this.isTouch ? 1.5 : 2);
+    this.pixelRatio = this.basePixelRatio;
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -106,6 +113,33 @@ export class Engine {
     this.raf = requestAnimationFrame(this.loop);
   }
 
+  /** Render resolution as a fraction of the display's (settings menu). */
+  setRenderScale(scale: number) {
+    this.renderScale = Math.min(1, Math.max(0.5, scale));
+    this.adaptScale = 1;
+    this.applyPixelRatio();
+  }
+
+  /** Swap the post-processing chain (null = plain tone-mapped render). Rebuilt from scratch each call. */
+  setPostFx(opts: PostFxOptions | null) {
+    this.post?.dispose();
+    this.post = null;
+    if (!opts) return;
+    try {
+      this.post = new PostFx(this.renderer, this.scene, this.camera, { ...opts, samples: this.isTouch ? 0 : opts.samples ?? 4 });
+      this.onResize();
+    } catch (e) {
+      console.warn('Post-processing unavailable, rendering without it', e);
+      this.post = null;
+    }
+  }
+
+  private applyPixelRatio() {
+    this.pixelRatio = Math.max(0.5, this.basePixelRatio * this.renderScale * this.adaptScale);
+    this.renderer.setPixelRatio(this.pixelRatio);
+    this.onResize();
+  }
+
   /** Reset the frame clock, e.g. after a pause, so the next dt isn't huge. */
   resetClock() { this.last = performance.now(); }
 
@@ -155,10 +189,9 @@ export class Engine {
       this.slowFrames = 0;
       return;
     }
-    if (this.slowFrames > 90 && this.pixelRatio > 0.8) {
-      this.pixelRatio = Math.max(0.75, this.pixelRatio - 0.25);
-      this.renderer.setPixelRatio(this.pixelRatio);
-      this.onResize();
+    if (this.slowFrames > 90 && this.adaptScale > 0.5) {
+      this.adaptScale = Math.max(0.5, this.adaptScale - 0.15);
+      this.applyPixelRatio();
       this.slowFrames = 0;
     }
   }

@@ -4,6 +4,8 @@ import HUD from './components/HUD';
 import TouchControls from './components/TouchControls';
 import { GameOver, PauseMenu, Shop, StartScreen } from './components/Screens';
 import { SaveMenu } from './components/SaveMenu';
+import { SettingsMenu } from './components/SettingsMenu';
+import { Settings, saveSettings } from './game/settings';
 import DevMenu, { DEV_MODE } from './components/DevMenu';
 import LevelDesigner from './components/LevelDesigner';
 import type { LevelDef } from './game/levels';
@@ -39,6 +41,8 @@ export default function App() {
   const [saveMenu, setSaveMenu] = useState<'save' | 'load' | null>(null);
   const [savesVersion, setSavesVersion] = useState(0);
   const [designer, setDesigner] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [playtesting, setPlaytesting] = useState(false);
   /** Seed the level designer is opened with: set when Test Play is pressed so the design survives. */
   const designerSeedRef = useRef<LevelDef | null>(null);
@@ -74,6 +78,7 @@ export default function App() {
         setGame(g);
         setMuted(g.sfx.muted);
         bindUiSfx(g.sfx);
+        setSettings(g.settings);
       } catch (e) {
         console.error(e);
         setError('Your browser could not start WebGL. Please try another browser or device.');
@@ -102,10 +107,17 @@ export default function App() {
     setToasts([]);
   }, [phase]);
 
-  // the save menu only lives on top of the title screen or the pause menu
+  // the save and settings menus only live on top of the title screen or the pause menu
   useEffect(() => {
-    if (phase !== 'menu' && phase !== 'paused') setSaveMenu(null);
+    if (phase !== 'menu' && phase !== 'paused') { setSaveMenu(null); setSettingsOpen(false); }
   }, [phase]);
+
+  const changeSettings = useCallback((s: Settings) => {
+    setSettings(s);
+    saveSettings(s);
+    gameRef.current?.applySettings(s);
+  }, []);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   // a playtest run is over once we're back at the menu (cleared via Back to Editor or Menu)
   useEffect(() => {
@@ -232,7 +244,7 @@ export default function App() {
         </>
       )}
 
-      {phase === 'menu' && !loading && !error && !saveMenu && (
+      {phase === 'menu' && !loading && !error && !saveMenu && !settingsOpen && (
         <StartScreen
           onPlay={play}
           isTouch={isTouch}
@@ -244,10 +256,11 @@ export default function App() {
           onContinue={continueRun}
           onLoadMenu={() => setSaveMenu('load')}
           onDesigner={() => { designerSeedRef.current = null; setDesigner(true); }}
+          onSettings={() => setSettingsOpen(true)}
         />
       )}
 
-      {phase === 'paused' && !saveMenu && (
+      {phase === 'paused' && !saveMenu && !settingsOpen && (
         <PauseMenu
           hud={hud}
           muted={muted}
@@ -257,8 +270,13 @@ export default function App() {
           onMenu={() => game?.toMenu()}
           onMute={() => game?.toggleMute()}
           onSaveMenu={() => setSaveMenu('save')}
+          onSettings={() => setSettingsOpen(true)}
           onDesigner={playtesting ? backToEditor : undefined}
         />
+      )}
+
+      {settingsOpen && settings && (phase === 'menu' || phase === 'paused') && (
+        <SettingsMenu settings={settings} onChange={changeSettings} muted={muted} onMute={() => game?.toggleMute()} onClose={closeSettings} isTouch={isTouch} />
       )}
 
       {saveMenu && (phase === 'menu' || phase === 'paused') && (
