@@ -9,6 +9,7 @@ import { LevelDef, levelFromMap, SecretDoor } from '../game/levels';
 import { LEVELS } from '../game/levels';
 import { buildGrid, buildWorld, enableShadows, World } from '../game/world';
 import { DirtMap } from '../game/dirt';
+import { Icon, IconName } from './ui';
 
 // ------------------------------------------------------------------ catalogues
 const P2 = Math.PI / 2;
@@ -352,6 +353,7 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
   const [paletteCollapsed, setPaletteCollapsed] = useState(false);
   const [propsCollapsed, setPropsCollapsed] = useState(false);
   const [showTip, setShowTip] = useState(true);
+  const [query, setQuery] = useState('');
   const [view2d, setView2d] = useState({ zoom: 1, ox: 0, oz: 0 });
   const view2dRef = useRef(view2d);
   view2dRef.current = view2d;
@@ -1271,6 +1273,7 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       const inField = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT');
       if (e.key === 'Escape') { setArmed(null); armedRef.current = null; setSel(null); selRef.current = null; draw2d(); updateHighlight(); return; }
       if (inField) return; // let the field handle all keys (including R, Delete, arrows)
+      if (/^[1-6]$/.test(e.key) && !e.ctrlKey && !e.metaKey) { setTool(TOOLS[Number(e.key) - 1][0]); return; }
       if (e.key === 'r' || e.key === 'R') { rotateSel(); return; }
       if (e.key === 'Delete' || e.key === 'Backspace') { if (selRef.current) { e.preventDefault(); deleteSel(); } return; }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
@@ -1344,127 +1347,175 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
 
   // ============================================================ render
   const roomOpts = level.rooms;
+  const activeRoom = roomOpts.find((r) => r.key === roomKey);
+  const q = query.trim().toLowerCase();
+  const furnList = q ? FURNITURE_PALETTE.filter((p) => p.label.toLowerCase().includes(q) || p.t.toLowerCase().includes(q)) : FURNITURE_PALETTE;
+  const toolDef = TOOLS.find(([k]) => k === tool)!;
+  const playTest = () => { try { onPlay(editorToLevelDef(levelRef.current)); } catch (e) { setError('Cannot play: ' + String((e as Error).message ?? e)); } };
+
   return (
-    <div className="fixed inset-0 flex flex-col bg-[#0a0a12] text-slate-200 font-[family-name:var(--font-ui)] select-none" onContextMenu={(e) => e.preventDefault()}>
-      {/* top bar */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-white/10 bg-[#0d0d18] flex-wrap">
-        <span className="font-display font-black text-amber-200 tracking-widest text-sm">🛠️ LEVEL DESIGNER</span>
-        <input className="bg-white/5 border border-white/10 rounded px-2 py-1 text-sm w-44" value={level.name} onChange={(e) => setLevel((l) => ({ ...l, name: e.target.value }))} placeholder="Building name" />
-        <input className="bg-white/5 border border-white/10 rounded px-2 py-1 text-sm flex-1 min-w-40" value={level.blurb} onChange={(e) => setLevel((l) => ({ ...l, blurb: e.target.value }))} placeholder="Arrival blurb" />
-        <div className="relative">
-          <button className="btn-ghost rounded px-3 py-1 text-sm" onClick={() => setLoadOpen((v) => !v)}>Load ▾</button>
-          {loadOpen && (
-            <div className="absolute right-0 mt-1 z-30 panel rounded-lg p-1 min-w-52">
-              {LEVELS.map((l, i) => (
-                <button key={l.key} className="block w-full text-left px-3 py-1.5 rounded hover:bg-white/10 text-sm" onClick={() => loadLevel(i)}>{i + 1}. {l.name}</button>
-              ))}
-            </div>
-          )}
+    <div className="ed-root fixed inset-0 flex flex-col select-none" onContextMenu={(e) => e.preventDefault()}>
+      {/* ---------------------------------------------------------- command bar */}
+      <header className="ed-bar h-12 shrink-0 flex items-center gap-2 px-2 border-b">
+        <IconBtn icon="chevronLeft" label="Back to game" onClick={onExit} />
+        <div className="ed-vsep" />
+        <div className="flex flex-col justify-center min-w-0 px-1">
+          <span className="font-display text-[9px] font-semibold tracking-[0.3em] text-[var(--cs-gold)] leading-none mb-1.5">LEVEL DESIGNER</span>
+          <input className="ed-title-input" value={level.name} onChange={(e) => setLevel((l) => ({ ...l, name: e.target.value }))} placeholder="Untitled building" />
         </div>
-        <button className="btn-ghost rounded px-3 py-1 text-sm disabled:opacity-30 disabled:cursor-not-allowed" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
-        <button className="btn-ghost rounded px-3 py-1 text-sm disabled:opacity-30 disabled:cursor-not-allowed" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
-        <button className="btn-ghost rounded px-3 py-1 text-sm" onClick={newLevel}>+ New</button>
-        <button className="btn-ghost rounded px-3 py-1 text-sm" onClick={exportJSON}>⬇ JSON</button>
-        <button className="btn-ghost rounded px-3 py-1 text-sm" onClick={copyTS}>{copied ? '✓ Copied' : '⧉ TS'}</button>
-        <button className="rounded px-3 py-1 text-sm bg-emerald-500/20 border border-emerald-400/40 text-emerald-100 hover:bg-emerald-500/30" onClick={() => { try { onPlay(editorToLevelDef(levelRef.current)); } catch (e) { setError('Cannot play: ' + String((e as Error).message ?? e)); } }}>▶ Test Play</button>
-        <button className="rounded px-3 py-1 text-sm bg-amber-500/20 border border-amber-400/40 text-amber-100 hover:bg-amber-500/30" onClick={onExit}>◀ Back to Game</button>
-      </div>
+        <input className="ed-input hidden lg:block flex-1 min-w-40 max-w-md ml-2" value={level.blurb} onChange={(e) => setLevel((l) => ({ ...l, blurb: e.target.value }))} placeholder="Arrival caption shown when the player enters…" title="Arrival caption" />
+        <div className="flex-1" />
 
-      {error && <div className="px-3 py-1 text-xs text-rose-300 bg-rose-900/20 border-b border-rose-500/20">{error}</div>}
-
-      <div className="flex-1 flex min-h-0">
-        {/* palette */}
-        {paletteCollapsed ? (
-          <div className="w-8 shrink-0 border-r border-white/10 bg-[#0c0c16] flex flex-col items-center pt-2">
-            <button className="text-slate-400 hover:text-amber-200 text-sm" onClick={() => setPaletteCollapsed(false)} title="Expand palette">▶</button>
-            <span className="text-[9px] text-slate-500 mt-1 [writing-mode:vertical-rl] rotate-180">Palette</span>
-          </div>
-        ) : (
-        <div className="w-60 shrink-0 border-r border-white/10 bg-[#0c0c16] overflow-y-auto">
-          <div className="flex items-center text-xs">
-            {(['furniture', 'decor', 'rooms'] as const).map((tb) => (
-              <button key={tb} className={`flex-1 py-2 capitalize ${tab === tb ? 'bg-white/10 text-amber-200 border-b-2 border-amber-400' : 'text-slate-400 hover:bg-white/5'}`} onClick={() => setTab(tb)}>{tb}</button>
-            ))}
-            <button className="px-1.5 text-slate-500 hover:text-amber-200" onClick={() => setPaletteCollapsed(true)} title="Collapse palette">◀</button>
-          </div>
-          <div className="p-2">
-            {tab === 'furniture' && (
-              <div className="grid grid-cols-3 gap-1.5">
-                {FURNITURE_PALETTE.map((p) => (
-                  <button
-                    key={p.t}
-                    draggable
-                    onDragStart={(e) => paletteDrag(e, { kind: 'furniture', t: p.t })}
-                    onClick={() => { setArmed({ kind: 'furniture', t: p.t }); armedRef.current = { kind: 'furniture', t: p.t }; }}
-                    className={`flex flex-col items-center gap-0.5 rounded-lg p-1.5 border text-[10px] ${armed?.kind === 'furniture' && armed.t === p.t ? 'border-cyan-400 bg-cyan-400/15' : 'border-white/10 bg-white/5 hover:bg-white/10'}`}
-                    title={p.label}
-                  >
-                    <span className="text-lg leading-none">{p.icon}</span>
-                    <span className="truncate w-full text-center">{p.label}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {tab === 'decor' && (
-              <div className="space-y-2">
-                <div className="grid grid-cols-2 gap-1.5">
-                  <PalChip label="Rug" icon="🟥" onDrag={(e) => paletteDrag(e, { kind: 'rug', color: 'red' })} onClick={() => { setArmed({ kind: 'rug', color: 'red' }); }} active={armed?.kind === 'rug'} />
-                  <PalChip label="Light" icon="💡" onDrag={(e) => paletteDrag(e, { kind: 'light' })} onClick={() => { setArmed({ kind: 'light' }); }} active={armed?.kind === 'light'} />
-                  <PalChip label="Painting" icon="🖼️" onDrag={(e) => paletteDrag(e, { kind: 'painting' })} onClick={() => { setArmed({ kind: 'painting' }); }} active={armed?.kind === 'painting'} />
-                  <PalChip label="Window" icon="🪟" onDrag={(e) => paletteDrag(e, { kind: 'window' })} onClick={() => { setArmed({ kind: 'window' }); }} active={armed?.kind === 'window'} />
-                  <PalChip label="Dock" icon="⚡" onDrag={(e) => paletteDrag(e, { kind: 'dock' })} onClick={() => { setArmed({ kind: 'dock' }); }} active={armed?.kind === 'dock'} />
-                  <PalChip label="Secret Door" icon="🚪" onDrag={(e) => paletteDrag(e, { kind: 'secret' })} onClick={() => { setTool('secret'); setArmed({ kind: 'secret' }); }} active={armed?.kind === 'secret'} />
-                </div>
-                <div>
-                  <div className="text-[11px] text-slate-400 mb-1">Rug colour</div>
-                  <div className="flex gap-1.5">
-                    {RUG_COLORS.map((c) => (
-                      <button key={c} draggable onDragStart={(e) => paletteDrag(e, { kind: 'rug', color: c })} onClick={() => setArmed({ kind: 'rug', color: c })}
-                        className={`w-7 h-7 rounded border-2 ${c === 'red' ? 'bg-red-600' : c === 'blue' ? 'bg-blue-600' : c === 'green' ? 'bg-green-600' : 'bg-yellow-600'} ${armed?.kind === 'rug' && armed.color === c ? 'border-cyan-400' : 'border-white/20'}`} title={c} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-            {tab === 'rooms' && (
-              <div className="space-y-2">
-                <div className="text-[11px] text-slate-400">Paint a room's tiles, then pick its floor:</div>
-                <div className="grid grid-cols-3 gap-1">
-                  {FLOOR_STYLES.map((f) => (
-                    <button key={f.key} onClick={() => { setFloorStyle(f.key); floorStyleRef.current = f.key; applyFloorToRoom(f.key); }}
-                      className={`rounded p-1 border text-[10px] ${floorStyle === f.key ? 'border-cyan-400 bg-cyan-400/15' : 'border-white/10 bg-white/5'}`}>
-                      <span className="block w-full h-4 rounded mb-0.5" style={{ background: f.color }} />
-                      {f.label}
+        <div className="ed-group">
+          <IconBtn icon="undo" label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo} />
+          <IconBtn icon="redo" label="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo} />
+        </div>
+        <div className="ed-vsep" />
+        <div className="ed-group">
+          <IconBtn icon="plus" label="New blank building" onClick={newLevel} />
+          <div className="relative">
+            <button className="ed-btn" onClick={() => setLoadOpen((v) => !v)} title="Open a built-in building">
+              <Icon name="folder" /><span className="hidden md:inline">Open</span><Icon name="chevronDown" className="w-3 h-3 opacity-60" />
+            </button>
+            {loadOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setLoadOpen(false)} />
+                <div className="ed-menu absolute right-0 mt-1.5 z-30 min-w-60 py-1.5">
+                  <div className="ed-label px-3 pb-1.5">Built-in buildings</div>
+                  {LEVELS.map((l, i) => (
+                    <button key={l.key} className="ed-menu-item" onClick={() => loadLevel(i)}>
+                      <span className="tabular-nums text-[var(--cs-dim)] w-5">{String(i + 1).padStart(2, '0')}</span>{l.name}
                     </button>
                   ))}
                 </div>
-                <div className="text-[11px] text-slate-400 pt-1">Active room to paint:</div>
-                <select className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-sm" value={roomKey} onChange={(e) => { setRoomKey(e.target.value); roomKeyRef.current = e.target.value; }}>
-                  {roomOpts.map((r) => <option key={r.key} value={r.key}>{r.key}: {r.name}</option>)}
-                </select>
-                <button className="w-full btn-ghost rounded px-3 py-1.5 text-sm" onClick={addRoom}>+ Add Room</button>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {roomsList.map((r) => (
-                    <div key={r.key} className="flex items-center gap-1 bg-white/5 rounded px-2 py-1 text-xs">
-                      <span className="font-mono text-amber-200 w-4">{r.key}</span>
-                      <input className="bg-transparent border-b border-white/10 flex-1 min-w-0" value={r.name} onChange={(e) => setLevel((l) => ({ ...l, rooms: l.rooms.map((rr) => rr.key === r.key ? { ...rr, name: e.target.value } : rr) }))} />
-                      <label className="flex items-center gap-0.5 text-[10px] text-slate-400"><input type="checkbox" checked={!!r.secret} onChange={(e) => setLevel((l) => ({ ...l, rooms: l.rooms.map((rr) => rr.key === r.key ? { ...rr, secret: e.target.checked } : rr) }))} /> secret</label>
-                      <button className="text-rose-400 hover:text-rose-300 px-1" onClick={() => setLevel((l) => ({ ...l, rooms: l.rooms.filter((rr) => rr.key !== r.key) }))}>✕</button>
-                    </div>
-                  ))}
-                </div>
-                <div className="text-[11px] text-slate-400 pt-1">Wall style:</div>
-                <select className="w-full bg-white/5 border border-white/10 rounded px-2 py-1 text-sm" value={level.paper} onChange={(e) => { const wp = WALL_PAPERS.find((w) => w.paper === Number(e.target.value))!; setLevel((l) => ({ ...l, paper: wp.paper, wainscot: wp.wainscot })); }}>
-                  {WALL_PAPERS.map((w) => <option key={w.paper} value={w.paper}>{w.label}</option>)}
-                </select>
-              </div>
+              </>
             )}
           </div>
+          <IconBtn icon="download" label="Download as JSON" onClick={exportJSON} />
+          <IconBtn icon={copied ? 'check' : 'copy'} label={copied ? 'Copied' : 'Copy as TypeScript'} onClick={copyTS} active={copied} />
         </div>
+        <div className="ed-vsep" />
+        <button className="cs-btn cs-btn-primary cs-btn-sm !min-h-[32px]" onClick={playTest} title="Play this building">
+          <span className="relative flex items-center gap-2"><Icon name="play" className="w-3.5 h-3.5" />Test play</span>
+        </button>
+      </header>
+
+      {error && (
+        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 text-xs text-[#ffc9bd] bg-[rgba(239,138,122,0.1)] border-b border-[rgba(239,138,122,0.25)]">
+          <Icon name="info" className="w-3.5 h-3.5" /><span className="flex-1">{error}</span>
+          <button className="opacity-60 hover:opacity-100" onClick={() => setError(null)} aria-label="Dismiss"><Icon name="close" className="w-3.5 h-3.5" /></button>
+        </div>
+      )}
+
+      <div className="flex-1 flex min-h-0">
+        {/* ---------------------------------------------------------- tool rail */}
+        <nav className="ed-rail w-12 shrink-0 flex flex-col items-center gap-1 py-2 border-r">
+          {TOOLS.map(([tk, label, icon], i) => (
+            <button key={tk} className="ed-tool" data-on={tool === tk || undefined} onClick={() => setTool(tk)} title={`${label} (${i + 1})`} aria-label={label}>
+              <Icon name={icon} className="w-[18px] h-[18px]" />
+              <span className="ed-tool-key">{i + 1}</span>
+            </button>
+          ))}
+          <div className="flex-1" />
+          <button className="ed-tool" onClick={() => setPaletteCollapsed((v) => !v)} title={paletteCollapsed ? 'Show assets' : 'Hide assets'}>
+            <Icon name={paletteCollapsed ? 'chevronRight' : 'chevronLeft'} className="w-4 h-4" />
+          </button>
+        </nav>
+
+        {/* ---------------------------------------------------------- assets */}
+        {!paletteCollapsed && (
+          <aside className="ed-panel w-64 shrink-0 flex flex-col min-h-0 border-r">
+            <div className="ed-tabs">
+              {([['furniture', 'Furniture'], ['decor', 'Fixtures'], ['rooms', 'Rooms']] as const).map(([tb, label]) => (
+                <button key={tb} className="ed-tab" data-on={tab === tb || undefined} onClick={() => setTab(tb)}>{label}</button>
+              ))}
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-3">
+              {tab === 'furniture' && (
+                <>
+                  <label className="ed-search mb-3">
+                    <Icon name="search" className="w-3.5 h-3.5 opacity-60" />
+                    <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search furniture" />
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {furnList.map((p) => (
+                      <AssetTile
+                        key={p.t}
+                        icon={p.icon}
+                        label={p.label}
+                        active={armed?.kind === 'furniture' && armed.t === p.t}
+                        onDrag={(e) => paletteDrag(e, { kind: 'furniture', t: p.t })}
+                        onClick={() => { setArmed({ kind: 'furniture', t: p.t }); armedRef.current = { kind: 'furniture', t: p.t }; }}
+                      />
+                    ))}
+                  </div>
+                  {!furnList.length && <div className="text-xs text-[var(--cs-dim)] text-center py-6">Nothing matches “{query}”.</div>}
+                  <p className="ed-hint mt-3">Click to arm, then click in a view to place. Or drag straight onto either view.</p>
+                </>
+              )}
+              {tab === 'decor' && (
+                <>
+                  <PanelSection title="Fixtures">
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <AssetTile label="Rug" icon="🟥" onDrag={(e) => paletteDrag(e, { kind: 'rug', color: 'red' })} onClick={() => { setArmed({ kind: 'rug', color: 'red' }); }} active={armed?.kind === 'rug'} />
+                      <AssetTile label="Light" icon="💡" onDrag={(e) => paletteDrag(e, { kind: 'light' })} onClick={() => { setArmed({ kind: 'light' }); }} active={armed?.kind === 'light'} />
+                      <AssetTile label="Painting" icon="🖼️" onDrag={(e) => paletteDrag(e, { kind: 'painting' })} onClick={() => { setArmed({ kind: 'painting' }); }} active={armed?.kind === 'painting'} />
+                      <AssetTile label="Window" icon="🪟" onDrag={(e) => paletteDrag(e, { kind: 'window' })} onClick={() => { setArmed({ kind: 'window' }); }} active={armed?.kind === 'window'} />
+                      <AssetTile label="Dock" icon="⚡" onDrag={(e) => paletteDrag(e, { kind: 'dock' })} onClick={() => { setArmed({ kind: 'dock' }); }} active={armed?.kind === 'dock'} />
+                      <AssetTile label="Secret door" icon="🚪" onDrag={(e) => paletteDrag(e, { kind: 'secret' })} onClick={() => { setTool('secret'); setArmed({ kind: 'secret' }); }} active={armed?.kind === 'secret'} />
+                    </div>
+                  </PanelSection>
+                  <PanelSection title="Rug colour">
+                    <Swatches value={armed?.kind === 'rug' ? armed.color : undefined} onPick={(c) => setArmed({ kind: 'rug', color: c })} onDrag={(e, c) => paletteDrag(e, { kind: 'rug', color: c })} />
+                  </PanelSection>
+                </>
+              )}
+              {tab === 'rooms' && (
+                <>
+                  <PanelSection title="Active room">
+                    <select className="ed-input w-full" value={roomKey} onChange={(e) => { setRoomKey(e.target.value); roomKeyRef.current = e.target.value; }}>
+                      {roomOpts.map((r) => <option key={r.key} value={r.key}>{r.key} · {r.name}</option>)}
+                    </select>
+                    <p className="ed-hint mt-1.5">Paint its tiles with the Room tool, then pick a floor below.</p>
+                  </PanelSection>
+                  <PanelSection title="Floor">
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {FLOOR_STYLES.map((f) => (
+                        <button key={f.key} onClick={() => { setFloorStyle(f.key); floorStyleRef.current = f.key; applyFloorToRoom(f.key); }}
+                          className="ed-swatch-tile" data-on={floorStyle === f.key || undefined}>
+                          <span className="block w-full h-6 mb-1" style={{ background: f.color }} />
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </PanelSection>
+                  <PanelSection title={`Rooms · ${roomsList.length}`} aside={<button className="ed-link" onClick={addRoom}><Icon name="plus" className="w-3 h-3" />Add</button>}>
+                    <div className="flex flex-col gap-1">
+                      {roomsList.map((r) => (
+                        <div key={r.key} className="ed-row group" data-on={r.key === roomKey || undefined} onClick={() => { setRoomKey(r.key); roomKeyRef.current = r.key; }}>
+                          <span className="ed-roomkey" style={{ background: FLOOR_COLOR[r.floor] }}>{r.key}</span>
+                          <input className="ed-inline-input flex-1 min-w-0" value={r.name} onChange={(e) => setLevel((l) => ({ ...l, rooms: l.rooms.map((rr) => rr.key === r.key ? { ...rr, name: e.target.value } : rr) }))} />
+                          <label className="flex items-center gap-1 text-[10px] text-[var(--cs-dim)] cursor-pointer" title="Hidden behind a secret door" onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox" className="ed-check" checked={!!r.secret} onChange={(e) => setLevel((l) => ({ ...l, rooms: l.rooms.map((rr) => rr.key === r.key ? { ...rr, secret: e.target.checked } : rr) }))} />Secret
+                          </label>
+                          <button className="ed-row-del" title="Delete room" onClick={(e) => { e.stopPropagation(); setLevel((l) => ({ ...l, rooms: l.rooms.filter((rr) => rr.key !== r.key) })); }}><Icon name="trash" className="w-3.5 h-3.5" /></button>
+                        </div>
+                      ))}
+                    </div>
+                  </PanelSection>
+                  <PanelSection title="Walls">
+                    <select className="ed-input w-full" value={level.paper} onChange={(e) => { const wp = WALL_PAPERS.find((w) => w.paper === Number(e.target.value))!; setLevel((l) => ({ ...l, paper: wp.paper, wainscot: wp.wainscot })); }}>
+                      {WALL_PAPERS.map((w) => <option key={w.paper} value={w.paper}>{w.label}</option>)}
+                    </select>
+                  </PanelSection>
+                </>
+              )}
+            </div>
+          </aside>
         )}
 
-        {/* 3D view */}
-        <div className="flex-1 min-w-0 relative">
+        {/* ---------------------------------------------------------- viewport */}
+        <main className="flex-1 min-w-0 relative bg-black">
           <div
             ref={mount3d}
             className="absolute inset-0"
@@ -1477,54 +1528,45 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
             onDrop={onDrop3d}
             style={{ cursor: armed ? 'crosshair' : 'default', touchAction: 'none' }}
           />
-          {showTip && (
-            <div className="absolute left-2 top-2 panel rounded-lg px-2.5 py-1.5 text-[11px] text-slate-300 flex items-start gap-2">
-              <div>
-                <div>🖱️ Drag: orbit · Shift/right-drag: pan · Wheel: zoom</div>
-                <div>Click object: select · R: rotate · Del: delete · Ctrl+Z: undo</div>
-              </div>
-              <button className="text-slate-500 hover:text-amber-200 leading-none" onClick={() => setShowTip(false)} title="Close">✕</button>
-            </div>
-          )}
+          <div className="absolute left-3 top-3 ed-chip pointer-events-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--cs-gold)]" />Perspective
+          </div>
           {armed && (
-            <div className="absolute left-1/2 -translate-x-1/2 top-2 panel rounded-full px-3 py-1 text-xs text-cyan-100 border border-cyan-400/40">
-              Placing: {armed.t ?? armed.kind} — click to place, Esc to cancel
+            <div className="absolute left-1/2 -translate-x-1/2 top-3 ed-chip ed-chip-cyan">
+              Placing <b className="font-semibold text-white">{FURNITURE_PALETTE.find((p) => p.t === armed.t)?.label ?? armed.kind}</b>
+              <span className="opacity-60">· click to place ·</span><kbd className="cs-key">Esc</kbd>
             </div>
           )}
-        </div>
-
-        {/* right: 2D grid + tools + props */}
-        {propsCollapsed ? (
-          <div className="w-8 shrink-0 border-l border-white/10 bg-[#0c0c16] flex flex-col items-center pt-2">
-            <button className="text-slate-400 hover:text-amber-200 text-sm" onClick={() => setPropsCollapsed(false)} title="Expand panel">◀</button>
-            <span className="text-[9px] text-slate-500 mt-1 [writing-mode:vertical-rl]">Tools</span>
-          </div>
-        ) : (
-        <div className="w-[360px] shrink-0 border-l border-white/10 bg-[#0c0c16] flex flex-col min-h-0">
-          <div className="p-2 border-b border-white/10">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-[11px] text-slate-400">Tile tools</div>
-              <button className="px-1 text-slate-500 hover:text-amber-200 text-sm leading-none" onClick={() => setPropsCollapsed(true)} title="Collapse panel">▶</button>
-            </div>
-            <div className="grid grid-cols-6 gap-1">
-              {([['select', 'Pick'], ['room', 'Room'], ['wall', 'Wall'], ['door', 'Door'], ['secret', 'Secret'], ['eraser', 'Erase']] as const).map(([tk, label]) => (
-                <button key={tk} className={`rounded py-1.5 text-[10px] border ${tool === tk ? 'border-amber-400 bg-amber-400/15 text-amber-100' : 'border-white/10 bg-white/5 hover:bg-white/10'}`} onClick={() => setTool(tk as typeof tool)} title={tk}>{label}</button>
-              ))}
-            </div>
-            {tool === 'room' && (
-              <select className="w-full mt-1 bg-white/5 border border-white/10 rounded px-2 py-1 text-xs" value={roomKey} onChange={(e) => { setRoomKey(e.target.value); roomKeyRef.current = e.target.value; }}>
-                {roomOpts.map((r) => <option key={r.key} value={r.key}>Room {r.key}: {r.name}</option>)}
-              </select>
-            )}
-          </div>
-          <div className="p-2 overflow-auto flex-1 min-h-0">
-            <div className="flex items-center justify-between mb-1">
-              <div className="text-[11px] text-slate-400">Overhead view ({COLS}×{ROWS})</div>
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-slate-500 tabular-nums">{Math.round(view2d.zoom * 100)}%</span>
-                <button className="btn-ghost rounded px-1.5 py-0.5 text-[10px]" onClick={() => { setView2d({ zoom: 1, ox: 0, oz: 0 }); draw2d(); }} title="Reset view">⤢</button>
+          {showTip && (
+            <div className="absolute left-3 bottom-3 ed-overlay px-3 py-2.5 text-[11px] text-[var(--cs-ink)] flex gap-4 items-start">
+              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 items-center">
+                <span className="ed-label">Orbit</span><span>Drag</span>
+                <span className="ed-label">Pan</span><span>Shift-drag or right-drag</span>
+                <span className="ed-label">Zoom</span><span>Wheel</span>
+                <span className="ed-label">Edit</span><span className="flex items-center gap-1"><kbd className="cs-key">R</kbd>rotate <kbd className="cs-key">Del</kbd>delete <kbd className="cs-key">←→</kbd>nudge</span>
               </div>
+              <button className="opacity-50 hover:opacity-100" onClick={() => setShowTip(false)} aria-label="Hide controls"><Icon name="close" className="w-3.5 h-3.5" /></button>
             </div>
+          )}
+        </main>
+
+        {/* ---------------------------------------------------------- inspector */}
+        {propsCollapsed ? (
+          <button className="ed-rail w-8 shrink-0 border-l flex flex-col items-center pt-3 gap-2 text-[var(--cs-dim)] hover:text-[var(--cs-gold-hi)]" onClick={() => setPropsCollapsed(false)} title="Show inspector">
+            <Icon name="chevronLeft" className="w-4 h-4" />
+            <span className="ed-label [writing-mode:vertical-rl]">Inspector</span>
+          </button>
+        ) : (
+        <aside className="ed-panel w-[340px] shrink-0 flex flex-col min-h-0 border-l">
+          <div className="ed-panel-head">
+            <span className="ed-label !text-[var(--cs-ink)]">Overhead map</span>
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-[var(--cs-dim)] tabular-nums mr-1">{Math.round(view2d.zoom * 100)}%</span>
+              <IconBtn small icon="fit" label="Reset map view" onClick={() => { setView2d({ zoom: 1, ox: 0, oz: 0 }); draw2d(); }} />
+              <IconBtn small icon="chevronRight" label="Hide inspector" onClick={() => setPropsCollapsed(true)} />
+            </div>
+          </div>
+          <div className="p-3 pb-2 shrink-0">
             <canvas
               ref={grid2d}
               onPointerDown={onPointerDown2d}
@@ -1534,40 +1576,48 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
               onDragOver={(e) => e.preventDefault()}
               onDrop={onDrop2d}
               onContextMenu={(e) => e.preventDefault()}
-              className="rounded border border-white/10 w-full touch-none cursor-crosshair"
-              style={{ height: '260px', imageRendering: 'auto' }}
+              className="ed-canvas w-full touch-none cursor-crosshair"
+              style={{ height: '240px', imageRendering: 'auto' }}
             />
-            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-slate-400">
-              <span><span className="inline-block w-2.5 h-2.5 bg-[#15131a] align-middle mr-0.5 rounded-sm" />Wall</span>
-              <span><span className="inline-block w-2.5 h-2.5 align-middle mr-0.5 rounded-sm" style={{ background: '#cfc8be' }} />Floor</span>
-              <span><span className="inline-block w-2.5 h-2.5 align-middle mr-0.5 rounded-sm" style={{ background: 'rgba(255,210,90,0.7)' }} />Door</span>
-              <span><span className="inline-block w-2.5 h-2.5 align-middle mr-0.5 rounded-sm" style={{ background: 'rgba(120,90,255,0.85)' }} />Secret</span>
-              <span><span className="inline-block w-2.5 h-2.5 align-middle mr-0.5 rounded-sm" style={{ background: '#35ff9a' }} />Dock</span>
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-[var(--cs-dim)]">
+              {([['#15131a', 'Wall'], ['#cfc8be', 'Floor'], ['rgba(255,210,90,0.7)', 'Door'], ['rgba(120,90,255,0.85)', 'Secret'], ['#35ff9a', 'Dock']] as const).map(([c, l]) => (
+                <span key={l} className="flex items-center gap-1"><span className="w-2.5 h-2.5 border border-white/15" style={{ background: c }} />{l}</span>
+              ))}
             </div>
           </div>
 
           {/* selection properties */}
-          <div className="p-2 border-t border-white/10 max-h-[46%] overflow-y-auto">
-            <div className="text-[11px] text-slate-400 mb-1">Selection</div>
-            {!selObj && <div className="text-xs text-slate-500">Click an object in either view to edit it.</div>}
+          <div className="ed-panel-head border-t">
+            <span className="ed-label !text-[var(--cs-ink)]">Properties</span>
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-3">
+            {!selObj && (
+              <div className="flex flex-col items-center text-center gap-2 py-8 text-[var(--cs-dim)]">
+                <Icon name="cursor" className="w-6 h-6 opacity-40" />
+                <div className="text-xs">Nothing selected</div>
+                <div className="text-[11px] max-w-[220px] leading-relaxed opacity-80">Click an object in the viewport or on the map to edit it.</div>
+              </div>
+            )}
             {selObj && (() => {
               const f = selObj.kind === 'furniture' ? (selObj.ref as EFurn) : null;
               const canRot = selObj.kind === 'furniture' || selObj.kind === 'painting' || selObj.kind === 'window' || selObj.kind === 'rug';
               const opts = f ? OBJECT_OPTIONS[f.t] : undefined;
               const ryVal = selObj.kind === 'furniture' ? editorRot(f!) : selObj.kind === 'painting' ? (selObj.ref as EPainting).ry : selObj.kind === 'window' ? (selObj.ref as EWindow).ry : 0;
+              const pal = f ? FURNITURE_PALETTE.find((p) => p.t === f.t) : null;
               return (
-                <div className="space-y-2">
+                <div className="flex flex-col">
                   {/* header */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold capitalize">{selObj.kind}</span>
-                    {f && <span className="text-[10px] text-slate-400">{f.t}</span>}
-                    <div className="flex-1" />
-                    {canRot && <button className="btn-ghost rounded px-2 py-0.5 text-xs" onClick={rotateSel} title="Rotate 15° (R)">↻ Rotate</button>}
-                    <button className="rounded px-2 py-0.5 text-xs bg-rose-500/20 border border-rose-400/40 text-rose-100 hover:bg-rose-500/30" onClick={deleteSel} title="Delete (Del)">✕ Del</button>
+                  <div className="flex items-center gap-3 mb-5 pb-4 border-b border-white/[0.06]">
+                    <div className="ed-obj-icon">{selObj.kind === 'rug' ? <span className="w-5 h-5 rounded-sm" style={{ background: RUG_HEX[(selObj.ref as ERug).color] ?? RUG_HEX.red }} /> : pal?.icon ?? KIND_ICON[selObj.kind]}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold text-[var(--cs-ink-hi)] truncate">{pal?.label ?? KIND_LABEL[selObj.kind]}</div>
+                      <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--cs-dim)]">{selObj.kind}{f ? ` · ${f.t}` : ''}</div>
+                    </div>
+                    {canRot && <IconBtn icon="rotate" label="Rotate 15° (R)" onClick={rotateSel} />}
+                    <IconBtn icon="trash" label="Delete (Del)" onClick={deleteSel} danger />
                   </div>
 
-                  {/* Position */}
-                  <Section title="Position">
+                  <PanelSection title="Transform">
                     <div className="grid grid-cols-2 gap-1.5">
                       {selObj.kind === 'secret' ? (
                         <>
@@ -1582,22 +1632,20 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
                       )}
                     </div>
                     {selObj.kind !== 'secret' && (
-                      <div className="grid grid-cols-4 gap-1 mt-1">
-                        <button className="btn-ghost rounded py-1 text-xs" onClick={() => nudge(0, -0.5)}>↑</button>
-                        <button className="btn-ghost rounded py-1 text-xs" onClick={() => nudge(0, 0.5)}>↓</button>
-                        <button className="btn-ghost rounded py-1 text-xs" onClick={() => nudge(-0.5, 0)}>←</button>
-                        <button className="btn-ghost rounded py-1 text-xs" onClick={() => nudge(0.5, 0)}>→</button>
+                      <div className="ed-seg mt-1.5">
+                        {([['←', -0.5, 0], ['↑', 0, -0.5], ['↓', 0, 0.5], ['→', 0.5, 0]] as const).map(([l, dx, dz]) => (
+                          <button key={l} onClick={() => nudge(dx, dz)} title="Nudge half a tile">{l}</button>
+                        ))}
                       </div>
                     )}
-                  </Section>
+                  </PanelSection>
 
-                  {/* Rotation */}
                   {canRot && selObj.kind !== 'rug' && (
-                    <Section title={selObj.kind === 'painting' || selObj.kind === 'window' ? 'Wall direction' : 'Rotation'}>
+                    <PanelSection title={selObj.kind === 'painting' || selObj.kind === 'window' ? 'Facing wall' : 'Rotation'}>
                       {selObj.kind === 'painting' || selObj.kind === 'window' ? (
-                        <div className="grid grid-cols-4 gap-1">
+                        <div className="ed-seg">
                           {[['N', 180], ['E', 270], ['S', 0], ['W', 90]].map(([label, deg]) => (
-                            <button key={label as string} className={`rounded py-1 text-[10px] border ${Math.round(nearestCardinal(ryVal) * RAD_TO_DEG) % 360 === (deg as number) % 360 ? 'border-amber-400 bg-amber-400/15 text-amber-100' : 'border-white/10 bg-white/5 hover:bg-white/10'}`}
+                            <button key={label as string} data-on={Math.round(nearestCardinal(ryVal) * RAD_TO_DEG) % 360 === (deg as number) % 360 || undefined}
                               onClick={() => setField({ ry: (deg as number) * DEG_TO_RAD })}>{label}</button>
                           ))}
                         </div>
@@ -1607,122 +1655,116 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
                             <input type="range" min={0} max={360} step={5}
                               value={Math.round(ryVal * RAD_TO_DEG) % 360}
                               onChange={(e) => setField({ ry: Number(e.target.value) * DEG_TO_RAD })}
-                              className="flex-1 accent-cyan-400" />
-                            <span className="text-[11px] text-slate-300 tabular-nums w-9 text-right">{Math.round(ryVal * RAD_TO_DEG) % 360}°</span>
+                              className="ed-range flex-1" />
+                            <span className="ed-readout">{Math.round(ryVal * RAD_TO_DEG) % 360}°</span>
                           </div>
-                          <div className="grid grid-cols-4 gap-1 mt-1">
+                          <div className="ed-seg mt-1.5">
                             {[0, 90, 180, 270].map((deg) => (
-                              <button key={deg} className="btn-ghost rounded py-0.5 text-[10px]" onClick={() => setField({ ry: deg * DEG_TO_RAD })}>{deg}°</button>
+                              <button key={deg} data-on={Math.round(ryVal * RAD_TO_DEG) % 360 === deg || undefined} onClick={() => setField({ ry: deg * DEG_TO_RAD })}>{deg}°</button>
                             ))}
                           </div>
                         </>
                       )}
-                    </Section>
+                    </PanelSection>
                   )}
                   {selObj.kind === 'rug' && (
-                    <Section title="Orientation">
-                      <button className="btn-ghost rounded px-2 py-1 text-xs w-full" onClick={rotateSel}>↻ Swap W/D</button>
-                    </Section>
+                    <PanelSection title="Orientation">
+                      <button className="ed-btn w-full justify-center" onClick={rotateSel}><Icon name="rotate" />Swap width and depth</button>
+                    </PanelSection>
                   )}
 
-                  {/* Size */}
                   {selObj.kind === 'furniture' && (
-                    <Section title="Size">
+                    <PanelSection title="Size">
                       <div className="grid grid-cols-2 gap-1.5">
                         <NumField label="W" value={f!.w ?? FURN_SIZE[f!.t]?.[0] ?? 1.5} step={0.1} onChange={(v) => setField({ w: v })} />
                         <NumField label="D" value={f!.d ?? FURN_SIZE[f!.t]?.[1] ?? 1.5} step={0.1} onChange={(v) => setField({ d: v })} />
                       </div>
-                    </Section>
+                    </PanelSection>
                   )}
                   {selObj.kind === 'rug' && (
-                    <Section title="Size">
+                    <PanelSection title="Size">
                       <div className="grid grid-cols-2 gap-1.5">
                         <NumField label="W" value={Math.abs((selObj.ref as ERug).x1 - (selObj.ref as ERug).x0)} step={1} onChange={(v) => resizeRug(v, undefined)} />
                         <NumField label="D" value={Math.abs((selObj.ref as ERug).z1 - (selObj.ref as ERug).z0)} step={1} onChange={(v) => resizeRug(undefined, v)} />
                       </div>
-                    </Section>
+                    </PanelSection>
                   )}
                   {selObj.kind === 'painting' && (
-                    <Section title="Size">
+                    <PanelSection title="Canvas">
                       <div className="grid grid-cols-3 gap-1.5">
                         <NumField label="W" value={(selObj.ref as EPainting).w} step={0.1} onChange={(v) => setField({ w: v })} />
                         <NumField label="H" value={(selObj.ref as EPainting).h} step={0.1} onChange={(v) => setField({ h: v })} />
-                        <NumField label="Idx" value={(selObj.ref as EPainting).idx} step={1} onChange={(v) => setField({ idx: Math.max(0, Math.round(v)) })} />
+                        <NumField label="Art" value={(selObj.ref as EPainting).idx} step={1} onChange={(v) => setField({ idx: Math.max(0, Math.round(v)) })} />
                       </div>
-                    </Section>
+                    </PanelSection>
                   )}
 
-                  {/* Object Options */}
-                  {selObj.kind === 'furniture' && (
-                    <Section title="Options">
-                      <div className="space-y-1">
+                  {selObj.kind === 'furniture' && (!!opts?.length || TIPPABLE.has(f!.t)) && (
+                    <PanelSection title="Options">
+                      <div className="flex flex-col gap-1">
                         {opts?.map((opt) => (
-                          <label key={opt.v} className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-white/10">
-                            <input type="checkbox" checked={(f!.v ?? 0) === opt.v}
-                              onChange={(e) => setField({ v: e.target.checked ? opt.v : 0 })}
-                              className="accent-cyan-400" />
-                            {opt.label}
-                          </label>
+                          <Toggle key={opt.v} label={opt.label} checked={(f!.v ?? 0) === opt.v} onChange={(on) => setField({ v: on ? opt.v : 0 })} />
                         ))}
                         {TIPPABLE.has(f!.t) && (
-                          <label className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-white/10">
-                            <input type="checkbox" checked={!!f!.fallen}
-                              onChange={(e) => setField({ fallen: e.target.checked })}
-                              className="accent-cyan-400" />
-                            Out of place
-                          </label>
+                          <Toggle label="Knocked over (tidy-up target)" checked={!!f!.fallen} onChange={(on) => setField({ fallen: on })} />
                         )}
                       </div>
-                    </Section>
+                    </PanelSection>
                   )}
 
-                  {/* Rug Colour */}
                   {selObj.kind === 'rug' && (
-                    <Section title="Colour">
-                      <div className="flex gap-1.5">
-                        {RUG_COLORS.map((c) => (
-                          <button key={c} onClick={() => setField({ color: c })}
-                            className={`w-7 h-7 rounded border-2 ${c === 'red' ? 'bg-red-600' : c === 'blue' ? 'bg-blue-600' : c === 'green' ? 'bg-green-600' : 'bg-yellow-600'} ${(selObj.ref as ERug).color === c ? 'border-cyan-400' : 'border-white/20'}`} title={c} />
-                        ))}
-                      </div>
-                    </Section>
+                    <PanelSection title="Colour">
+                      <Swatches value={(selObj.ref as ERug).color} onPick={(c) => setField({ color: c })} />
+                    </PanelSection>
                   )}
 
-                  {/* Light */}
                   {selObj.kind === 'light' && (
-                    <Section title="Light">
+                    <PanelSection title="Light">
                       <div className="grid grid-cols-3 gap-1.5">
-                        <NumField label="Height" value={(selObj.ref as ELight).y} step={0.5} onChange={(v) => setField({ y: v })} />
-                        <NumField label="Power" value={(selObj.ref as ELight).int} step={5} onChange={(v) => setField({ int: v })} />
-                        <NumField label="Range" value={(selObj.ref as ELight).dist} step={2} onChange={(v) => setField({ dist: v })} />
+                        <NumField label="Y" value={(selObj.ref as ELight).y} step={0.5} onChange={(v) => setField({ y: v })} />
+                        <NumField label="Pow" value={(selObj.ref as ELight).int} step={5} onChange={(v) => setField({ int: v })} />
+                        <NumField label="Rng" value={(selObj.ref as ELight).dist} step={2} onChange={(v) => setField({ dist: v })} />
                       </div>
-                      <label className="flex items-center gap-2 bg-white/5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-white/10 mt-1.5">
-                        <input type="checkbox" checked={((selObj.ref as ELight).flaky ?? 1) > 0}
-                          onChange={(e) => setField({ flaky: e.target.checked ? 1 : 0 })}
-                          className="accent-cyan-400" />
-                        Flickers
-                      </label>
+                      <div className="mt-1.5">
+                        <Toggle label="Flickers" checked={((selObj.ref as ELight).flaky ?? 1) > 0} onChange={(on) => setField({ flaky: on ? 1 : 0 })} />
+                      </div>
                       {((selObj.ref as ELight).flaky ?? 1) > 0 && (() => {
                         const fl = (selObj.ref as ELight).flaky ?? 1;
                         return (
-                          <div className="flex items-center gap-2 mt-1.5">
-                            <span className="text-[10px] text-slate-400 w-16 shrink-0">Intensity</span>
+                          <div className="flex items-center gap-2 mt-2">
+                            <span className="ed-label w-16 shrink-0">Flicker</span>
                             <input type="range" min={0.1} max={2} step={0.1} value={fl}
                               onChange={(e) => setField({ flaky: parseFloat(e.target.value) })}
-                              className="flex-1 accent-cyan-400" />
-                            <span className="text-[10px] text-slate-400 tabular-nums w-7 text-right">{fl.toFixed(1)}</span>
+                              className="ed-range flex-1" />
+                            <span className="ed-readout">{fl.toFixed(1)}</span>
                           </div>
                         );
                       })()}
-                    </Section>
+                    </PanelSection>
                   )}
                 </div>
               );
             })()}
           </div>
-        </div>
+        </aside>
         )}
       </div>
+
+      {/* ---------------------------------------------------------- status bar */}
+      <footer className="ed-bar h-7 shrink-0 flex items-center gap-4 px-3 border-t text-[10px] uppercase tracking-[0.14em] text-[var(--cs-dim)]">
+        <span className="flex items-center gap-1.5 text-[var(--cs-ink)]"><Icon name={toolDef[2]} className="w-3 h-3" />{toolDef[1]}</span>
+        {(tool === 'room') && activeRoom && <span>Painting <b className="text-[var(--cs-ink-hi)] font-semibold">{activeRoom.key} · {activeRoom.name}</b></span>}
+        {tool === 'room' && (
+          <select className="ed-inline-input !text-[10px] uppercase tracking-[0.1em]" value={roomKey} onChange={(e) => { setRoomKey(e.target.value); roomKeyRef.current = e.target.value; }}>
+            {roomOpts.map((r) => <option key={r.key} value={r.key}>Room {r.key}</option>)}
+          </select>
+        )}
+        <div className="flex-1" />
+        <span>{level.rooms.length} rooms</span>
+        <span>{level.furniture.length} objects</span>
+        <span>{level.lights.length} lights</span>
+        <span className="hidden md:inline">{COLS}×{ROWS} grid</span>
+      </footer>
     </div>
   );
 
@@ -1740,28 +1782,69 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
   }
 }
 
-// ---- small field components
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+// ---- editor chrome
+const TOOLS: ['select' | 'room' | 'wall' | 'door' | 'secret' | 'eraser', string, IconName][] = [
+  ['select', 'Select', 'cursor'],
+  ['room', 'Paint room', 'room'],
+  ['wall', 'Wall', 'wall'],
+  ['door', 'Door', 'door'],
+  ['secret', 'Secret door', 'key'],
+  ['eraser', 'Erase', 'eraser'],
+];
+const KIND_ICON: Record<string, string> = { rug: '🟥', light: '💡', painting: '🖼️', window: '🪟', dock: '⚡', secret: '🚪' };
+const KIND_LABEL: Record<string, string> = { rug: 'Rug', light: 'Light', painting: 'Painting', window: 'Window', dock: 'Charging dock', secret: 'Secret door' };
+const RUG_HEX: Record<string, string> = { red: '#a3313a', blue: '#33498f', green: '#3d7d52', gold: '#b38a32' };
+
+function IconBtn({ icon, label, onClick, disabled, active, danger, small }: { icon: IconName; label: string; onClick: () => void; disabled?: boolean; active?: boolean; danger?: boolean; small?: boolean }) {
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1 border-b border-white/5 pb-0.5">{title}</div>
+    <button className={`ed-icon-btn ${small ? 'ed-icon-btn-sm' : ''} ${danger ? 'ed-danger' : ''}`} data-on={active || undefined} onClick={onClick} disabled={disabled} title={label} aria-label={label}>
+      <Icon name={icon} className={small ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
+    </button>
+  );
+}
+function PanelSection({ title, children, aside }: { title: string; children: React.ReactNode; aside?: React.ReactNode }) {
+  return (
+    <section className="mb-5 last:mb-0">
+      <div className="flex items-center justify-between mb-2">
+        <span className="ed-label">{title}</span>
+        {aside}
+      </div>
       {children}
+    </section>
+  );
+}
+function AssetTile({ label, icon, onDrag, onClick, active }: { label: string; icon: string; onDrag: (e: React.DragEvent) => void; onClick: () => void; active: boolean }) {
+  return (
+    <button draggable onDragStart={onDrag} onClick={onClick} className="ed-asset" data-on={active || undefined} title={label}>
+      <span className="text-xl leading-none">{icon}</span>
+      <span className="truncate w-full text-center">{label}</span>
+    </button>
+  );
+}
+function Swatches({ value, onPick, onDrag }: { value?: string; onPick: (c: string) => void; onDrag?: (e: React.DragEvent, c: string) => void }) {
+  return (
+    <div className="flex gap-1.5">
+      {RUG_COLORS.map((c) => (
+        <button key={c} draggable={!!onDrag} onDragStart={onDrag ? (e) => onDrag(e, c) : undefined} onClick={() => onPick(c)}
+          className="ed-swatch" data-on={value === c || undefined} style={{ background: RUG_HEX[c] }} title={c} aria-label={`${c} rug`} />
+      ))}
     </div>
   );
 }
-function PalChip({ label, icon, onDrag, onClick, active }: { label: string; icon: string; onDrag: (e: React.DragEvent) => void; onClick: () => void; active: boolean }) {
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (on: boolean) => void }) {
   return (
-    <button draggable onDragStart={onDrag} onClick={onClick}
-      className={`flex flex-col items-center gap-0.5 rounded-lg p-2 border text-[10px] ${active ? 'border-cyan-400 bg-cyan-400/15' : 'border-white/10 bg-white/5 hover:bg-white/10'}`}>
-      <span className="text-lg leading-none">{icon}</span>{label}
-    </button>
+    <label className="ed-toggle">
+      <span className="flex-1">{label}</span>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="sr-only" />
+      <span className="ed-switch" data-on={checked || undefined} />
+    </label>
   );
 }
 function NumField({ label, value, step, onChange }: { label: string; value: number; step: number; onChange: (v: number) => void }) {
   return (
-    <label className="flex items-center gap-1 bg-white/5 rounded px-1.5 py-1">
-      <span className="text-slate-400 w-5 text-[10px]">{label}</span>
-      <input type="number" step={step} value={Math.round(value * 100) / 100} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} className="bg-transparent w-full text-xs outline-none" />
+    <label className="ed-num">
+      <span>{label}</span>
+      <input type="number" step={step} value={Math.round(value * 100) / 100} onChange={(e) => onChange(parseFloat(e.target.value) || 0)} />
     </label>
   );
 }
