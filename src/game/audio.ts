@@ -10,6 +10,13 @@ export class Sfx extends Synth {
   /** Vacuum hum: the engine's motor drone. */
   hum(level: number, pitch: number) { this.drone(level, pitch); }
 
+  /** Menu cursor moved: a soft, short tick. */
+  uiMove() { this.tone(1760, 0.035, 'sine', 0.035); this.noise(0.03, 5200, 0.02, 0, 'highpass'); }
+  /** Menu item confirmed: a low bell with a bright overtone. */
+  uiSelect() { this.tone(523, 0.22, 'triangle', 0.1); this.tone(1047, 0.28, 'sine', 0.06, 0, 0.03); }
+  /** Menu closed / backed out. */
+  uiBack() { this.tone(784, 0.12, 'sine', 0.06, -220); }
+
   coin() { this.tone(988, 0.08, 'square', 0.12); this.tone(1319, 0.25, 'square', 0.12, 0, 0.07); }
   clear() {
     [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.35, 'triangle', 0.22, 0, i * 0.08));

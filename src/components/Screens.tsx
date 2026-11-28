@@ -1,42 +1,158 @@
-import { useEffect, useMemo, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { REVIVE_MIN, type GameOverInfo, type HudState } from '../game/Game';
 import { MACHINES, UPGRADES, UpKey, upgradeCost } from '../game/constants';
 import { DEV_MODE } from '../game/devmode';
 import { ScoreEntry, addScore, lastName, loadScores, qualifies, saveName } from '../game/highscores';
 import type { SaveMeta } from '../game/saves';
 import { formatClock, formatShift, nightNumber } from './HUD';
+import {
+  Button, Frame, FrameHeader, Icon, KeyCap, MenuEntry, MenuList, PromptBar, Rule, SectionTitle, Stat, StatStrip, uiSound, useEscape,
+} from './ui';
 
-function RoombaIcon({ size = 120 }: { size?: number }) {
-  return (
-    <div className="relative floaty" style={{ width: size, height: size }}>
-      <div className="absolute inset-0 rounded-full" style={{ background: 'radial-gradient(circle at 35% 30%, #4a4f5a, #1a1c21 70%)', boxShadow: '0 12px 30px rgba(0,0,0,0.6), 0 0 40px rgba(0,229,255,0.25)' }} />
-      <div className="absolute rounded-full border-[3px] border-cyan-300 spin-slow" style={{ inset: size * 0.16, boxShadow: '0 0 14px #00e5ff, inset 0 0 10px #00e5ff', borderStyle: 'dashed' }} />
-      <div className="absolute flex gap-[18%] justify-center w-full" style={{ top: '38%' }}>
-        <div className="rounded-full bg-cyan-100" style={{ width: size * 0.1, height: size * 0.1, boxShadow: '0 0 10px #bffcff' }} />
-        <div className="rounded-full bg-cyan-100" style={{ width: size * 0.1, height: size * 0.1, boxShadow: '0 0 10px #bffcff' }} />
+/* ================================================================== hall of fame */
+
+const RANK_COLORS = ['#f3d687', '#d9dde4', '#d39a62'];
+
+export function ScoreTable({ scores, highlight, compact }: { scores: ScoreEntry[]; highlight?: number; compact?: boolean }) {
+  if (!scores.length) {
+    return (
+      <div className="text-center py-8">
+        <div className="font-display text-sm tracking-[0.24em] text-[var(--cs-ink)]">NO RECORDS YET</div>
+        <div className="text-xs text-[var(--cs-dim)] mt-1.5">Be the first name on the wall.</div>
       </div>
-      <div className="absolute left-1/2 -translate-x-1/2 rounded-b-full border-b-[3px] border-cyan-100" style={{ top: '55%', width: size * 0.2, height: size * 0.08 }} />
+    );
+  }
+  return (
+    <table className="w-full text-sm border-collapse">
+      <thead>
+        <tr className="text-[10px] uppercase tracking-[0.22em] text-[var(--cs-dim)]">
+          <th className="text-left font-semibold pb-2 pl-2 w-10">#</th>
+          <th className="text-left font-semibold pb-2">Name</th>
+          {!compact && <th className="text-center font-semibold pb-2 hidden sm:table-cell">Nights</th>}
+          <th className="text-center font-semibold pb-2">Rooms</th>
+          <th className="text-right font-semibold pb-2 pr-2">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {scores.map((s, i) => {
+          const hl = i === highlight;
+          return (
+            <tr key={i} className={`border-t border-[var(--cs-line-soft)] ${hl ? 'bg-[rgba(217,180,90,0.16)]' : ''}`}>
+              <td className="py-2 pl-2 font-display font-bold tabular-nums" style={{ color: RANK_COLORS[i] ?? 'var(--cs-dim)' }}>{String(i + 1).padStart(2, '0')}</td>
+              <td className={`py-2 font-semibold tracking-wider truncate max-w-[130px] ${hl ? 'text-[var(--cs-gold-hi)]' : 'text-[var(--cs-ink-hi)]'}`}>{s.name}</td>
+              {!compact && (
+                <td className="py-2 text-center text-xs text-[var(--cs-ink)] tabular-nums hidden sm:table-cell">
+                  {s.nights !== undefined ? s.nights : s.reason === 'dawn' ? 1 : 0}
+                </td>
+              )}
+              <td className="py-2 text-center text-xs text-[var(--cs-ink)] tabular-nums">{s.rooms}</td>
+              <td className="py-2 pr-2 text-right font-display font-bold tabular-nums gold-text">{s.score.toLocaleString()}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/* ================================================================== title screen */
+
+const GUIDE: [string, ReactNode][] = [
+  ['Sweep', <>Drive over dirt and muddy footprints to vacuum them up. Keep the suction going to build a <b className="text-[var(--cs-cyan)]">combo</b>.</>],
+  ['Shine', <>Bring a room to <b className="text-[var(--cs-ink-hi)]">100%</b> for bonus coins and points.</>],
+  ['Power', <>Driving drains the battery and a full bin stops cleaning. Return to the <b className="text-[var(--cs-green)]">dock</b> to charge and empty.</>],
+  ['Upgrade', <>Spend coins at the dock. Max every upgrade to trade up to a better machine: mop bot, shop vac, floor scrubber and beyond.</>],
+  ['Expand', <>Get every room spotless to unlock the next building: a hunting lodge, a grand hotel, an ironworks, a cruise ship, and on it goes.</>],
+  ['Beware', <>Something in the manor keeps tracking mud back in.</>],
+  ['Dawn', <>Each <b className="text-[var(--cs-ink-hi)]">5:00 AM</b> pays a big bonus, then the curse winds the clock back to midnight. Sweep for as long as your battery lasts.</>],
+];
+
+const KEYS: [string[], string][] = [
+  [['W', 'A', 'S', 'D'], 'Drive (or arrow keys)'],
+  [['Shift'], 'Turbo (or Space)'],
+  [['E'], 'Upgrade shop, while docked'],
+  [['Esc'], 'Pause (or P)'],
+  [['M'], 'Mute'],
+  [['R'], 'Restart'],
+];
+
+function Guide() {
+  return (
+    <dl className="grid grid-cols-[84px_1fr] gap-x-4 gap-y-3.5 text-[13px] leading-relaxed">
+      {GUIDE.map(([k, v]) => (
+        <div key={k} className="contents">
+          <dt className="font-display text-[11px] font-semibold tracking-[0.24em] text-[var(--cs-gold)] uppercase pt-[3px]">{k}</dt>
+          <dd className="text-[var(--cs-ink)]">{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function Controls({ isTouch }: { isTouch: boolean }) {
+  if (isTouch) {
+    return (
+      <dl className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-3 text-[13px]">
+        {[['Drag', 'Steer from anywhere on screen'], ['Hold Turbo', 'Speed boost, drains battery faster'], ['Pause button', 'Top right corner'], ['Dock', 'Tap the shop button when docked']].map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt className="font-display text-[11px] font-semibold tracking-[0.2em] text-[var(--cs-gold)] uppercase pt-[2px]">{k}</dt>
+            <dd className="text-[var(--cs-ink)]">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return (
+    <div className="flex flex-col">
+      {KEYS.map(([keys, label]) => (
+        <div key={label} className="flex items-center justify-between py-2.5 border-t border-[var(--cs-line-soft)] first:border-t-0">
+          <span className="text-[13px] text-[var(--cs-ink)]">{label}</span>
+          <span className="flex gap-1">{keys.map((k) => <KeyCap key={k}>{k}</KeyCap>)}</span>
+        </div>
+      ))}
     </div>
   );
 }
 
-export function ScoreTable({ scores, highlight }: { scores: ScoreEntry[]; highlight?: number }) {
-  if (!scores.length) {
-    return <div className="text-center text-amber-100/50 text-sm py-4">No scores yet — be the first to sweep the manor!</div>;
-  }
+type InfoTab = 'guide' | 'controls' | 'scores';
+const TABS: [InfoTab, string][] = [['guide', 'HOW TO PLAY'], ['controls', 'CONTROLS'], ['scores', 'HALL OF FAME']];
+
+/** How-to / controls / hall of fame, as one tabbed panel. ←/→ (or Q/E) change tab. */
+function InfoPanel({ tab, setTab, onClose, isTouch, scores }: { tab: InfoTab; setTab: (t: InfoTab) => void; onClose: () => void; isTouch: boolean; scores: ScoreEntry[] }) {
+  useEscape(onClose);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      const i = TABS.findIndex(([t]) => t === tab);
+      let n = -1;
+      if (e.code === 'ArrowLeft' || e.code === 'KeyQ' || e.code === 'KeyA') n = (i + TABS.length - 1) % TABS.length;
+      if (e.code === 'ArrowRight' || e.code === 'KeyE' || e.code === 'KeyD') n = (i + 1) % TABS.length;
+      if (n >= 0) { e.preventDefault(); uiSound.move(); setTab(TABS[n][0]); }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [tab, setTab]);
+
   return (
-    <table className="w-full text-sm">
-      <tbody>
-        {scores.map((s, i) => (
-          <tr key={i} className={`${i === highlight ? 'bg-amber-300/20 text-amber-100' : i % 2 ? 'bg-white/[0.03]' : ''}`}>
-            <td className="py-1 pl-2 w-8 font-black text-amber-300/80">{i === 0 ? '👑' : `${i + 1}.`}</td>
-            <td className="py-1 font-semibold truncate max-w-[120px]">{s.name}</td>
-            <td className="py-1 text-xs text-amber-100/50 text-center">{s.nights !== undefined ? `☀️${s.nights}` : s.reason === 'dawn' ? '☀️' : '🪫'} {s.rooms}🏠</td>
-            <td className="py-1 pr-2 text-right font-black tabular-nums gold-text">{s.score.toLocaleString()}</td>
-          </tr>
+    <Frame className="w-full max-w-[560px] p-6 sm:p-8 cs-slide-r flex flex-col max-h-full">
+      <FrameHeader eyebrow="Blackwood Manor · Staff handbook" title={TABS.find(([t]) => t === tab)![1]} onClose={onClose} />
+      <div className="flex gap-4 sm:gap-6 border-b border-[var(--cs-line-soft)] mb-5 overflow-x-auto">
+        {TABS.map(([t, label]) => (
+          <button key={t} className="cs-tab" data-on={t === tab || undefined} onClick={() => { if (t !== tab) { uiSound.move(); setTab(t); } }}>
+            {label}
+          </button>
         ))}
-      </tbody>
-    </table>
+      </div>
+      <div className="min-h-0 overflow-y-auto scrollbar-thin pr-1 -mr-1" key={tab}>
+        <div className="cs-panel-in">
+          {tab === 'guide' && <Guide />}
+          {tab === 'controls' && <Controls isTouch={isTouch} />}
+          {tab === 'scores' && <ScoreTable scores={scores} />}
+        </div>
+      </div>
+      {!isTouch && (
+        <PromptBar className="mt-6 pt-4 border-t border-[var(--cs-line-soft)]" items={[[<><KeyCap>Q</KeyCap><KeyCap>E</KeyCap></>, 'Switch tab'], [<KeyCap>Esc</KeyCap>, 'Back']]} />
+      )}
+    </Frame>
   );
 }
 
@@ -46,117 +162,167 @@ export interface StartScreenProps {
   seenIntro: boolean;
   autosave: SaveMeta | null;
   saveCount: number;
+  muted: boolean;
+  onMute: () => void;
   onContinue: () => void;
   onLoadMenu: () => void;
   onDesigner: () => void;
 }
 
-/** Every main-menu button shares one size. */
-const MENU_BTN = 'w-60 h-16 rounded-2xl px-4 font-black tracking-widest text-base flex flex-col items-center justify-center leading-tight';
-
-export function StartScreen({ onPlay, isTouch, seenIntro, autosave, saveCount, onContinue, onLoadMenu, onDesigner }: StartScreenProps) {
+export function StartScreen({ onPlay, isTouch, autosave, saveCount, muted, onMute, onContinue, onLoadMenu, onDesigner }: StartScreenProps) {
   const scores = useMemo(() => loadScores(), []);
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => {
-      if (e.code === 'Enter' || e.code === 'Space') {
-        e.preventDefault();
-        if (autosave) onContinue();
-        else onPlay(!seenIntro);
-      }
-    };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onPlay, seenIntro, autosave, onContinue]);
+  const [panel, setPanel] = useState<InfoTab | null>(null);
+  const closePanel = useCallback(() => setPanel(null), []);
+
+  const replaces = autosave ? <span className="block mt-1 text-[var(--cs-dim)]">Starting over replaces your autosave. Make a manual save from the pause menu to keep it.</span> : null;
+  const items: MenuEntry[] = [];
+  if (autosave) {
+    items.push({
+      id: 'continue', label: 'Continue', onSelect: onContinue,
+      desc: <><span className="text-[var(--cs-ink-hi)]">{autosave.levelName ?? 'Blackwood Manor'}</span> · {formatShift(autosave.time)} · {autosave.score.toLocaleString()} pts</>,
+    });
+  }
+  items.push(
+    {
+      id: 'new', label: 'New Shift', onSelect: () => onPlay(true),
+      desc: <>The owners left at midnight, swearing they'd be home by dawn. They never came back, and the night keeps starting over. Somewhere in the dark, a little robot wakes up.{replaces}</>,
+    },
+    { id: 'quick', label: 'Quick Start', onSelect: () => onPlay(false), desc: <>Skip the opening cinematic and get straight to work.{replaces}</> },
+  );
+  if (saveCount > 0) items.push({ id: 'load', label: 'Load Game', value: saveCount, onSelect: onLoadMenu, desc: `Pick up any of your ${saveCount} saved shift${saveCount === 1 ? '' : 's'}.` });
+  items.push(
+    { id: 'guide', label: 'How to Play', onSelect: () => setPanel('guide'), desc: 'Cleaning, combos, the dock, upgrades, and the curse on the manor.' },
+    {
+      id: 'scores', label: 'Hall of Fame', onSelect: () => setPanel('scores'),
+      desc: scores.length ? <>Record: <span className="text-[var(--cs-ink-hi)]">{scores[0].score.toLocaleString()}</span> by {scores[0].name}</> : 'No records yet.',
+    },
+    { id: 'designer', label: 'Level Designer', onSelect: onDesigner, desc: 'Draw your own building, furnish it, then playtest it.' },
+  );
 
   return (
-    <div className="absolute inset-0 overflow-y-auto scrollbar-thin fade-in" style={{ background: 'radial-gradient(ellipse at 50% 30%, rgba(20,10,30,0.35), rgba(5,3,8,0.88) 75%)' }}>
-      <div className="min-h-full flex flex-col items-center justify-center px-4 py-8 gap-6">
-        <div className="flex flex-col items-center text-center gap-3">
-          <RoombaIcon size={isTouch ? 90 : 116} />
-          <div className="font-display text-amber-100/60 tracking-[0.4em] text-xs sm:text-sm">MIDNIGHT AT BLACKWOOD MANOR</div>
-          <h1 className="font-display font-black text-5xl sm:text-7xl leading-none gold-text drop-shadow-[0_4px_20px_rgba(212,175,55,0.35)]">CLEAN SWEEP</h1>
-          <p className="max-w-md text-amber-50/70 text-sm sm:text-base">
-            The owners left Blackwood Manor at midnight, swearing they'd be home by dawn. Dawn came. They didn't. Now the night keeps starting over, and something keeps tracking mud through the halls. Somewhere in the dark, a little robot is about to wake up…
-          </p>
-        </div>
+    <div className="absolute inset-0 fade-in overflow-hidden">
+      {/* backdrop: the manor flyover shows through on the right */}
+      <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(90deg, rgba(5,3,8,0.94) 0%, rgba(5,3,8,0.82) 32%, rgba(5,3,8,0.25) 62%, rgba(5,3,8,0.4) 100%)' }} />
+      <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(180deg, rgba(5,3,8,0.55) 0%, transparent 22%, transparent 70%, rgba(5,3,8,0.9) 100%)' }} />
+      <div className="cs-mist" />
+      <div className="absolute inset-0 vignette pointer-events-none" />
 
-        {/* four buttons sit in a 2x2 block rather than a ragged 3 + 1 */}
-        <div className={`flex flex-wrap justify-center gap-3 w-full ${autosave && saveCount > 0 ? 'max-w-[31.5rem]' : 'max-w-3xl'}`}>
-          {autosave && (
-            <button onClick={onContinue} className={`btn-gold ${MENU_BTN}`}>
-              <span>▶ CONTINUE SHIFT</span>
-              <span className="text-[10px] font-bold opacity-70 tracking-normal tabular-nums">
-                {formatShift(autosave.time)} · {autosave.score.toLocaleString()} pts · {autosave.levelName ?? 'Blackwood Manor'}
-              </span>
-            </button>
-          )}
-          <button onClick={() => onPlay(true)} className={`${autosave ? 'btn-ghost text-amber-100' : 'btn-gold'} ${MENU_BTN}`}>
-            {autosave ? '✦ NEW SHIFT' : '▶ START SHIFT'}
-          </button>
-          <button onClick={() => onPlay(false)} className={`btn-ghost text-amber-100 ${MENU_BTN}`}>
-            ⏩ {autosave ? 'NEW, SKIP INTRO' : 'SKIP INTRO'}
-          </button>
-          {saveCount > 0 && (
-            <button onClick={onLoadMenu} className={`btn-ghost text-amber-100 ${MENU_BTN}`}>
-              📂 LOAD GAME
-            </button>
-          )}
-        </div>
-        {autosave && <div className="-mt-3 text-xs text-amber-100/40">A new shift will replace the autosave — make a manual save from the pause menu to keep it.</div>}
-
-        <button onClick={onDesigner} className="btn-ghost text-amber-100/80 rounded-full px-5 py-2 text-sm font-semibold tracking-widest mt-1">
-          🛠️ LEVEL DESIGNER
-        </button>
-
-        <div className="grid sm:grid-cols-2 gap-4 w-full max-w-3xl">
-          <div className="panel rounded-2xl p-4">
-            <h2 className="font-display text-amber-200 tracking-widest text-sm mb-3">HOW TO PLAY</h2>
-            <ul className="text-sm space-y-2 text-amber-50/80">
-              <li>🧹 Drive over dirt & muddy footprints to vacuum them up. Keep sucking to build a <b className="text-cyan-300">COMBO</b>.</li>
-              <li>✨ Get a room to <b>100%</b> for bonus <b className="text-amber-300">coins</b> & points.</li>
-              <li>🔋 Battery drains as you drive. 🗑️ A full bin stops cleaning. Return to the <b className="text-emerald-300">dock</b> to charge & empty.</li>
-              <li>🛒 Spend coins on upgrades while docked. Max them all to trade up to a better machine: mop bot, shop vac, floor scrubber…</li>
-              <li>🚚 Get every room of a building spotless to unlock the <b>next building</b>: a hunting lodge, a grand hotel, an ironworks, a warehouse, a cruise ship — and on it goes.</li>
-              <li>👻 Beware: something keeps tracking mud back in…</li>
-              <li>☀️ Every <b>5:00 AM</b> dawn pays a big bonus, then the curse winds the clock back to midnight and the mud returns. Keep sweeping as long as your battery lasts!</li>
-            </ul>
-            <div className="mt-3 pt-3 border-t border-white/10 text-xs text-amber-100/60">
-              {isTouch ? 'Drag anywhere to steer · Hold ⚡ for turbo · ❚❚ to pause' : 'WASD / Arrows: drive · Shift/Space: turbo · E: shop at dock · P/Esc: pause · M: mute · R: restart'}
+      <div className="relative h-full flex flex-col" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <main className="flex-1 min-h-0 flex items-stretch gap-8 px-5 sm:px-[clamp(28px,6vw,96px)]">
+          {/* left column: title lockup + menu */}
+          <div className={`w-full lg:w-[480px] shrink-0 overflow-y-auto scrollbar-thin flex flex-col justify-center py-8 ${panel ? 'max-lg:hidden' : ''}`}>
+            <div className="mb-8 sm:mb-10">
+              <div className="flex items-center gap-3 mb-3 cs-rise" style={{ animationDelay: '200ms' }}>
+                <span className="text-[10px] sm:text-[11px] tracking-[0.42em] text-[var(--cs-ink)] font-display whitespace-nowrap">MIDNIGHT AT BLACKWOOD MANOR</span>
+              </div>
+              <h1 className="font-display font-black leading-[0.84] text-[clamp(64px,10vw,124px)] cs-title-in">
+                <span className="cs-title block">CLEAN</span>
+                <span className="cs-title block">SWEEP</span>
+              </h1>
+              <Rule className="cs-rule-left mt-5 max-w-[340px] cs-rise" />
+              <p className="mt-4 max-w-[380px] text-[13px] leading-relaxed text-[var(--cs-dim)] cs-rise" style={{ animationDelay: '350ms' }}>
+                The night keeps starting over. Something keeps tracking mud through the halls.
+              </p>
             </div>
+            <MenuList items={items} enabled={!panel} />
           </div>
-          <div className="panel rounded-2xl p-4">
-            <h2 className="font-display text-amber-200 tracking-widest text-sm mb-2">🏆 HALL OF FAME</h2>
-            <ScoreTable scores={scores} />
-          </div>
-        </div>
+
+          {/* right side: the info panel */}
+          {panel && (
+            <div className="flex-1 min-w-0 flex items-center justify-center lg:justify-end py-6">
+              <InfoPanel tab={panel} setTab={setPanel} onClose={closePanel} isTouch={isTouch} scores={scores} />
+            </div>
+          )}
+        </main>
+
+        <footer className="relative flex items-center justify-between gap-4 px-5 sm:px-[clamp(28px,6vw,96px)] py-4 border-t border-[var(--cs-line-soft)] bg-gradient-to-t from-black/50 to-transparent">
+          {!isTouch ? (
+            <PromptBar items={panel ? [[<KeyCap>Esc</KeyCap>, 'Back']] : [[<><KeyCap>↑</KeyCap><KeyCap>↓</KeyCap></>, 'Select'], [<KeyCap>Enter</KeyCap>, 'Confirm'], [<KeyCap>M</KeyCap>, 'Mute']]} />
+          ) : <span />}
+          <button onClick={() => { uiSound.select(); onMute(); }} className="cs-icon-btn" aria-label={muted ? 'Unmute' : 'Mute'} title={muted ? 'Sound off' : 'Sound on'}>
+            <Icon name={muted ? 'soundOff' : 'soundOn'} />
+          </button>
+        </footer>
       </div>
     </div>
   );
 }
 
-export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, muted, hud, onDesigner }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; muted: boolean; hud: HudState | null; onDesigner?: () => void }) {
+/* ================================================================== pause */
+
+export function PauseMenu({ onResume, onRestart, onMenu, onMute, onSaveMenu, muted, hud, onDesigner, isTouch }: { onResume: () => void; onRestart: () => void; onMenu: () => void; onMute: () => void; onSaveMenu: () => void; muted: boolean; hud: HudState | null; onDesigner?: () => void; isTouch?: boolean }) {
+  const items: MenuEntry[] = [
+    { id: 'resume', label: 'Resume', onSelect: onResume, desc: 'Back to work. The clock starts ticking again.' },
+    { id: 'save', label: 'Save / Load', onSelect: onSaveMenu, desc: 'Write this shift to a slot, or load another one.' },
+    { id: 'restart', label: 'Restart', confirm: 'Restart shift?', onSelect: onRestart, desc: 'Start this shift over from midnight. Current progress is lost.' },
+    { id: 'sound', label: 'Sound', value: muted ? 'Off' : 'On', onSelect: onMute, desc: 'Toggle all game audio.' },
+  ];
+  if (onDesigner) items.push({ id: 'designer', label: 'Level Editor', onSelect: onDesigner, desc: 'Abandon this playtest and go back to editing.' });
+  items.push({ id: 'menu', label: 'Main Menu', onSelect: onMenu, desc: 'Progress is autosaved. Continue from the title screen any time.' });
+
   return (
-    <div className="absolute inset-0 bg-black/60 flex items-center justify-center p-4 fade-in" style={{ backdropFilter: 'blur(3px)' }}>
-      <div className="panel rounded-2xl p-6 w-full max-w-sm flex flex-col gap-3 big-in">
-        <h2 className="font-display font-black text-4xl text-center gold-text tracking-widest">PAUSED</h2>
+    <div className="absolute inset-0 fade-in">
+      <div className="absolute inset-0 bg-black/45" style={{ backdropFilter: 'blur(5px) saturate(0.7)', WebkitBackdropFilter: 'blur(5px) saturate(0.7)' }} />
+      <aside
+        className="relative h-full w-full sm:w-[440px] flex flex-col px-6 sm:px-10 cs-slide-l overflow-y-auto scrollbar-thin"
+        style={{
+          background: 'linear-gradient(90deg, #07050a, #07050a 55%, rgba(7,5,10,0.88))',
+          borderRight: '1px solid var(--cs-line-soft)',
+          paddingTop: 'max(2.5rem, env(safe-area-inset-top))',
+          paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))',
+        }}
+      >
+        <div className="text-[11px] tracking-[0.34em] uppercase text-[var(--cs-dim)] mb-2">{hud ? `${hud.levelName} · ${formatShift(hud.time)}` : 'Blackwood Manor'}</div>
+        <h2 className="font-display font-black text-5xl tracking-[0.14em] cs-title leading-none">PAUSED</h2>
+        <Rule className="cs-rule-left mt-5 mb-6" />
         {hud && (
-          <div className="grid grid-cols-3 gap-2 text-center text-xs mb-2">
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Score</div><div className="font-black text-amber-200">{hud.score.toLocaleString()}</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Time</div><div className="font-black text-amber-200">{formatShift(hud.time)}</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Rooms</div><div className="font-black text-amber-200">{hud.roomsCleared}/{hud.roomsTotal}</div></div>
-          </div>
+          <StatStrip className="mb-8">
+            <Stat label="Score" value={hud.score.toLocaleString()} />
+            <Stat label="Rooms" value={<>{hud.roomsCleared}<span className="text-[var(--cs-dim)] text-sm">/{hud.roomsTotal}</span></>} />
+            <Stat label="Coins" value={hud.coins.toLocaleString()} />
+          </StatStrip>
         )}
-        <button onClick={onResume} className="btn-gold rounded-xl py-3 font-black tracking-widest text-lg">▶ RESUME</button>
-        <button onClick={onSaveMenu} className="btn-ghost rounded-xl py-2.5 font-bold">💾 Save / Load</button>
-        <button onClick={onRestart} className="btn-ghost rounded-xl py-2.5 font-bold">↻ Restart <span className="opacity-50 text-xs">(R)</span></button>
-        <button onClick={onMute} className="btn-ghost rounded-xl py-2.5 font-bold">{muted ? '🔇 Sound off' : '🔊 Sound on'} <span className="opacity-50 text-xs">(M)</span></button>
-        <button onClick={onMenu} className="btn-ghost rounded-xl py-2.5 font-bold">⌂ Main menu</button>
-        {onDesigner && <button onClick={onDesigner} className="btn-ghost rounded-xl py-2.5 font-bold text-cyan-200">🛠️ Back to Level Editor</button>}
-        <div className="text-center text-[11px] text-amber-100/40">Progress autosaved — Continue from the main menu anytime.</div>
-      </div>
+        <MenuList items={items} size="md" />
+        <div className="flex-1 min-h-6" />
+        {!isTouch && (
+          <PromptBar className="pt-4 border-t border-[var(--cs-line-soft)]" items={[[<><KeyCap>↑</KeyCap><KeyCap>↓</KeyCap></>, 'Select'], [<KeyCap>Enter</KeyCap>, 'Confirm'], [<KeyCap>Esc</KeyCap>, 'Resume']]} />
+        )}
+      </aside>
     </div>
   );
 }
+
+/* ================================================================== shop */
+
+function Pips({ n, of }: { n: number; of: number }) {
+  return (
+    <div className="flex gap-[3px] mt-2">
+      {Array.from({ length: of }, (_, k) => (
+        <div key={k} className="h-[5px] flex-1" style={{ transform: 'skewX(-20deg)', background: k < n ? 'linear-gradient(180deg, #ffe7a3, #d9b45a)' : 'rgba(255,255,255,0.08)', boxShadow: k < n ? '0 0 6px rgba(217,180,90,0.6)' : undefined }} />
+      ))}
+    </div>
+  );
+}
+
+function IconTile({ children, tone = 'gold', dim }: { children: ReactNode; tone?: 'gold' | 'cyan' | 'violet'; dim?: boolean }) {
+  const c = tone === 'cyan' ? 'rgba(127,233,245,0.35)' : tone === 'violet' ? 'rgba(200,150,255,0.4)' : 'var(--cs-line)';
+  return (
+    <div className={`w-12 h-12 shrink-0 flex items-center justify-center text-2xl ${dim ? 'grayscale opacity-50' : ''}`} style={{ border: `1px solid ${c}`, background: 'radial-gradient(circle at 50% 35%, rgba(255,255,255,0.08), rgba(0,0,0,0.3))', clipPath: 'polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px)' }}>
+      {children}
+    </div>
+  );
+}
+
+function Price({ value, ok }: { value: number; ok: boolean }) {
+  return (
+    <span className={`font-display font-bold text-sm whitespace-nowrap tabular-nums flex items-center gap-1.5 ${ok ? 'text-[var(--cs-gold-hi)]' : 'text-[var(--cs-red)]'}`}>
+      <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ background: 'radial-gradient(circle at 35% 35%, #fff3c4, #c4932f)' }} />
+      {value.toLocaleString()}
+    </span>
+  );
+}
+
+const card = 'text-left p-3.5 border transition-all flex gap-3.5 items-center';
 
 /**
  * The garage: every machine you own (tap one to switch while docked) and the next one to buy,
@@ -169,35 +335,31 @@ function MachinePanel({ hud, onBuyMachine, onSwitch }: { hud: HudState; onBuyMac
   const maxLevels = UPGRADES.reduce((n, u) => n + u.costs.length, 0);
   const can = !!next && hud.allMaxed && hud.coins >= next.price;
   return (
-    <div className="mb-3 flex flex-col gap-2.5">
-      <div className="rounded-xl p-3 border border-cyan-300/30 bg-cyan-300/[0.07]">
-        <div className="flex gap-3 items-center">
-          <div className="text-3xl w-10 text-center">{cur.icon}</div>
+    <div className="grid sm:grid-cols-2 gap-3 mb-6">
+      <div className={`${card} border-[rgba(127,233,245,0.25)] bg-[rgba(127,233,245,0.05)] flex-col !items-stretch`}>
+        <div className="flex gap-3.5 items-center">
+          <IconTile tone="cyan">{cur.icon}</IconTile>
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] uppercase tracking-widest text-cyan-200/70 font-bold">Driving · machine {hud.machine + 1} of {MACHINES.length}</div>
-            <div className="font-bold text-amber-50 truncate">{cur.name}</div>
-            <div className="text-xs text-amber-100/60">{cur.desc}</div>
+            <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--cs-cyan)]/80 font-semibold">Driving · {hud.machine + 1} of {MACHINES.length}</div>
+            <div className="font-display font-bold text-[var(--cs-ink-hi)] truncate tracking-wide">{cur.name}</div>
+            <div className="text-xs text-[var(--cs-dim)] leading-snug">{cur.desc}</div>
           </div>
         </div>
         {hud.owned > 1 && (
-          <div className="mt-2.5 pt-2.5 border-t border-white/10">
-            <div className="text-[10px] uppercase tracking-widest text-cyan-200/70 font-bold mb-1.5">Garage · tap to switch</div>
+          <div className="mt-3 pt-3 border-t border-white/10">
+            <div className="text-[10px] uppercase tracking-[0.22em] text-[var(--cs-dim)] font-semibold mb-2">Garage</div>
             <div className="flex flex-wrap gap-1.5">
               {MACHINES.slice(0, hud.owned).map((m, i) => (
                 <button
                   key={m.name}
-                  onClick={() => onSwitch(i)}
+                  onClick={() => { uiSound.select(); onSwitch(i); }}
                   disabled={i === hud.machine}
-                  title={m.name}
-                  className={`rounded-lg px-2.5 py-1.5 text-xs font-bold flex items-center gap-1.5 border transition-all ${
-                    i === hud.machine
-                      ? 'bg-cyan-300/25 border-cyan-200/70 text-cyan-50'
-                      : 'btn-ghost border-white/15 text-amber-50 hover:border-cyan-200/50 active:scale-95'
+                  title={m.mopR > 0 ? `${m.name} · leaves a wet sheen on tile floors` : m.name}
+                  className={`px-2.5 py-1.5 text-xs font-semibold flex items-center gap-1.5 border transition-colors ${
+                    i === hud.machine ? 'bg-[rgba(127,233,245,0.18)] border-[rgba(127,233,245,0.6)] text-white' : 'border-white/15 text-[var(--cs-ink)] hover:border-[rgba(127,233,245,0.5)] hover:text-white'
                   }`}
                 >
-                  <span className="text-base">{m.icon}</span>
-                  <span>{m.name}</span>
-                  {m.mopR > 0 && <span className="text-[10px] opacity-70" title="Leaves a wet sheen on tile floors">💧</span>}
+                  <span className="text-sm">{m.icon}</span>{m.name}
                 </button>
               ))}
             </div>
@@ -206,25 +368,24 @@ function MachinePanel({ hud, onBuyMachine, onSwitch }: { hud: HudState; onBuyMac
       </div>
       {next ? (
         <button
-          onClick={onBuyMachine}
+          onClick={() => { if (hud.allMaxed) uiSound.select(); onBuyMachine(); }}
           disabled={!hud.allMaxed}
-          className={`text-left rounded-xl p-3 border transition-all flex gap-3 items-center ${
-            can ? 'bg-fuchsia-300/15 border-fuchsia-300/50 hover:bg-fuchsia-300/25 active:scale-[0.98]' : 'bg-white/[0.03] border-white/10 opacity-80'
-          }`}
+          className={`${card} ${can ? 'border-[rgba(200,150,255,0.5)] bg-[rgba(200,150,255,0.1)] hover:bg-[rgba(200,150,255,0.18)]' : 'border-white/10 bg-white/[0.02]'}`}
         >
-          <div className={`text-3xl w-10 text-center ${hud.allMaxed ? '' : 'grayscale opacity-60'}`}>{hud.allMaxed ? next.icon : '🔒'}</div>
+          <IconTile tone="violet" dim={!hud.allMaxed}>{hud.allMaxed ? next.icon : <Icon name="lock" className="w-5 h-5 text-[var(--cs-ink)]" />}</IconTile>
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] uppercase tracking-widest text-fuchsia-200/80 font-bold">Next machine</div>
-            <div className="font-bold text-amber-50 truncate">{next.name}</div>
-            <div className="text-xs text-amber-100/60">
-              {hud.allMaxed ? next.desc : `Max every upgrade on your ${MACHINES[hud.owned - 1].name} to unlock (${levels}/${maxLevels})`}
+            <div className="text-[10px] uppercase tracking-[0.22em] text-[#d8b8ff]/80 font-semibold">Next machine</div>
+            <div className="font-display font-bold text-[var(--cs-ink-hi)] truncate tracking-wide">{next.name}</div>
+            <div className="text-xs text-[var(--cs-dim)] leading-snug">
+              {hud.allMaxed ? next.desc : `Max every upgrade on your ${MACHINES[hud.owned - 1].name} to unlock.`}
             </div>
+            {!hud.allMaxed && <Pips n={levels} of={maxLevels} />}
           </div>
-          <div className={`font-black text-sm whitespace-nowrap ${can ? 'text-amber-200' : 'text-red-300/80'}`}>🪙{next.price}</div>
+          <Price value={next.price} ok={can} />
         </button>
       ) : (
-        <div className="rounded-xl p-3 border border-emerald-300/30 bg-emerald-400/10 flex items-center justify-center text-sm font-bold text-emerald-200">
-          🏆 You own every machine money can buy
+        <div className={`${card} justify-center border-[rgba(143,220,170,0.3)] bg-[rgba(143,220,170,0.06)] font-display text-sm tracking-[0.14em] text-[var(--cs-green)]`}>
+          EVERY MACHINE OWNED
         </div>
       )}
     </div>
@@ -233,66 +394,70 @@ function MachinePanel({ hud, onBuyMachine, onSwitch }: { hud: HudState; onBuyMac
 
 export function Shop({ hud, onBuy, onBuyMachine, onSwitchMachine, onClose, isTouch }: { hud: HudState; onBuy: (k: UpKey) => void; onBuyMachine: () => void; onSwitchMachine: (i: number) => void; onClose: () => void; isTouch: boolean }) {
   return (
-    <div className="absolute inset-0 bg-black/65 flex items-center justify-center p-3 fade-in overflow-y-auto" style={{ backdropFilter: 'blur(3px)' }}>
-      <div className="panel rounded-2xl p-4 sm:p-6 w-full max-w-2xl big-in my-auto">
-        <div className="flex items-center justify-between mb-4 gap-2">
-          <div>
-            <h2 className="font-display font-black text-2xl sm:text-3xl gold-text tracking-widest">UPGRADE DOCK</h2>
-            <div className="text-xs text-amber-100/60">Time is frozen while you shop</div>
-          </div>
-          <div className="panel rounded-full px-4 py-1.5 flex items-center gap-2">
-            <span className="text-xl">🪙</span>
-            <span className="font-black text-xl text-amber-200 tabular-nums">{hud.coins}</span>
-          </div>
-        </div>
-        <MachinePanel hud={hud} onBuyMachine={onBuyMachine} onSwitch={onSwitchMachine} />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          {UPGRADES.map((u, i) => {
-            const lvl = hud.upgrades[u.key];
-            const maxed = lvl >= u.costs.length;
-            const cost = maxed ? 0 : upgradeCost(u, lvl, hud.machine);
-            const can = !maxed && hud.coins >= cost;
-            return (
-              <button
-                key={u.key}
-                onClick={() => onBuy(u.key)}
-                disabled={maxed}
-                className={`text-left rounded-xl p-3 border transition-all flex gap-3 items-center ${
-                  maxed ? 'bg-emerald-400/10 border-emerald-300/30' : can ? 'bg-amber-300/10 border-amber-300/40 hover:bg-amber-300/20 active:scale-[0.98]' : 'bg-white/[0.03] border-white/10 opacity-70'
-                }`}
-              >
-                <div className="text-3xl w-10 text-center">{u.icon}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-amber-50 truncate">{u.name}</span>
-                    {!isTouch && <span className="text-[10px] text-amber-100/40 border border-white/15 rounded px-1">{i + 1}</span>}
+    <div className="absolute inset-0 bg-black/60 overflow-y-auto scrollbar-thin fade-in" style={{ backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)' }}>
+      <div className="min-h-full flex items-center justify-center p-3 sm:p-6">
+        <Frame className="w-full max-w-3xl p-5 sm:p-8 cs-panel-in">
+          <FrameHeader
+            eyebrow="Docked · time is frozen"
+            title="UPGRADE DOCK"
+            right={
+              <div className="flex flex-col items-end">
+                <span className="text-[10px] uppercase tracking-[0.24em] text-[var(--cs-dim)]">Coins</span>
+                <span className="font-display font-black text-2xl gold-text tabular-nums leading-none">{hud.coins.toLocaleString()}</span>
+              </div>
+            }
+          />
+          <SectionTitle>MACHINE</SectionTitle>
+          <MachinePanel hud={hud} onBuyMachine={onBuyMachine} onSwitch={onSwitchMachine} />
+          <SectionTitle>UPGRADES</SectionTitle>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {UPGRADES.map((u, i) => {
+              const lvl = hud.upgrades[u.key];
+              const maxed = lvl >= u.costs.length;
+              const cost = maxed ? 0 : upgradeCost(u, lvl, hud.machine);
+              const can = !maxed && hud.coins >= cost;
+              return (
+                <button
+                  key={u.key}
+                  onClick={() => { if (can) uiSound.select(); onBuy(u.key); }}
+                  onMouseEnter={() => !maxed && uiSound.move()}
+                  disabled={maxed}
+                  className={`${card} ${
+                    maxed ? 'border-[rgba(143,220,170,0.25)] bg-[rgba(143,220,170,0.04)]'
+                      : can ? 'border-[var(--cs-line)] bg-[rgba(217,180,90,0.05)] hover:bg-[rgba(217,180,90,0.12)] hover:border-[var(--cs-gold)]'
+                        : 'border-white/[0.08] bg-white/[0.015]'
+                  }`}
+                >
+                  <IconTile dim={!can && !maxed}>{u.icon}</IconTile>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-display font-bold text-[var(--cs-ink-hi)] truncate tracking-wide">{u.name}</span>
+                      {!isTouch && <KeyCap>{i + 1}</KeyCap>}
+                    </div>
+                    <div className="text-xs text-[var(--cs-dim)] leading-snug">{u.desc}</div>
+                    <Pips n={lvl} of={u.costs.length} />
                   </div>
-                  <div className="text-xs text-amber-100/60">{u.desc}</div>
-                  <div className="flex gap-1 mt-1.5">
-                    {u.costs.map((_, k) => (
-                      <div key={k} className={`h-1.5 flex-1 rounded-full ${k < lvl ? 'bg-amber-300 shadow-[0_0_6px_#fcd34d]' : 'bg-white/10'}`} />
-                    ))}
-                  </div>
-                </div>
-                <div className={`font-black text-sm whitespace-nowrap ${maxed ? 'text-emerald-300' : can ? 'text-amber-200' : 'text-red-300/80'}`}>
-                  {maxed ? 'MAX' : `🪙${cost}`}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2 mt-4 items-center">
-          <div className="flex-1 text-xs text-amber-100/60 text-center sm:text-left">
-            🔋 {Math.round((hud.battery / hud.batteryMax) * 100)}% · 🗑️ {Math.round((hud.bin / hud.binCap) * 100)}%
+                  {maxed
+                    ? <span className="font-display font-bold text-xs tracking-[0.2em] text-[var(--cs-green)] flex items-center gap-1"><Icon name="check" className="w-3.5 h-3.5" />MAX</span>
+                    : <Price value={cost} ok={can} />}
+                </button>
+              );
+            })}
           </div>
-          <button onClick={onClose} className="btn-gold rounded-xl px-8 py-3 font-black tracking-widest w-full sm:w-auto">
-            BACK TO CLEANING {!isTouch && <span className="opacity-60 text-sm">(E)</span>}
-          </button>
-        </div>
+          <div className="flex flex-col sm:flex-row gap-4 mt-7 pt-5 border-t border-[var(--cs-line-soft)] items-center">
+            <div className="flex-1 flex gap-6 text-[11px] uppercase tracking-[0.2em] text-[var(--cs-dim)]">
+              <span>Battery <b className="text-[var(--cs-ink-hi)] font-display tabular-nums">{Math.round((hud.battery / hud.batteryMax) * 100)}%</b></span>
+              <span>Bin <b className="text-[var(--cs-ink-hi)] font-display tabular-nums">{Math.round((hud.bin / hud.binCap) * 100)}%</b></span>
+            </div>
+            <Button variant="primary" onClick={onClose} className="w-full sm:w-auto" hint={!isTouch ? 'E' : undefined}>Back to cleaning</Button>
+          </div>
+        </Frame>
       </div>
     </div>
   );
 }
+
+/* ================================================================== results */
 
 export function GameOver({ info, onRestart, onMenu, onRevive, isTouch, onDesigner }: { info: GameOverInfo; onRestart: () => void; onMenu: () => void; onRevive: () => void; isTouch: boolean; onDesigner?: () => void }) {
   const [shown, setShown] = useState(0);
@@ -308,7 +473,7 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch, onDesigne
     let raf = 0;
     const start = performance.now();
     const tick = (n: number) => {
-      const k = Math.min(1, (n - start) / 1200);
+      const k = Math.min(1, (n - start) / 1400);
       setShown(Math.round(info.score * (1 - Math.pow(1 - k, 3))));
       if (k < 1) raf = requestAnimationFrame(tick);
     };
@@ -322,19 +487,24 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch, onDesigne
     const rank = addScore({ name: n, score: info.score, rooms: info.rooms, reason: info.reason, nights: info.nights, date: Date.now() });
     setSaved(rank);
     setScores(loadScores());
+    uiSound.select();
   };
 
   const dawn = info.reason === 'dawn';
   return (
-    <div className="absolute inset-0 bg-black/70 overflow-y-auto scrollbar-thin fade-in" style={{ backdropFilter: 'blur(3px)' }}>
-      <div className="min-h-full flex items-center justify-center p-4">
-        <div className="panel rounded-2xl p-5 sm:p-7 w-full max-w-lg flex flex-col gap-4 big-in">
+    <div className="absolute inset-0 bg-black/70 overflow-y-auto scrollbar-thin fade-in" style={{ backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)' }}>
+      <div className="min-h-full flex items-center justify-center p-3 sm:p-6">
+        <Frame className="w-full max-w-xl p-5 sm:p-8 flex flex-col gap-6 cs-panel-in">
           <div className="text-center">
-            <div className="text-5xl mb-1">{dawn ? '☀️' : '🪫'}</div>
-            <h2 className={`font-display font-black text-3xl sm:text-4xl tracking-wider ${dawn ? 'gold-text' : 'text-red-300'}`}>
+            <div className="text-[11px] tracking-[0.34em] uppercase text-[var(--cs-dim)] mb-3">Night {nightNumber(info.time)} · {formatClock(info.time)} · Results</div>
+            <h2
+              className={`font-display font-black text-3xl sm:text-[2.6rem] leading-none tracking-[0.12em] ${dawn ? 'cs-title' : ''}`}
+              style={dawn ? undefined : { color: '#f0a493', textShadow: '0 0 30px rgba(239,100,80,0.35)' }}
+            >
               {dawn ? 'SHIFT COMPLETE' : 'BATTERY DEPLETED'}
             </h2>
-            <div className="text-sm text-amber-100/60 mt-1">
+            <Rule className="max-w-[240px] mx-auto mt-4" />
+            <div className="text-[13px] text-[var(--cs-ink)] mt-3">
               {dawn
                 ? 'You made it to dawn.'
                 : info.nights > 0
@@ -342,81 +512,83 @@ export function GameOver({ info, onRestart, onMenu, onRevive, isTouch, onDesigne
                   : 'Your little robot ran out of juice before the first dawn.'}
             </div>
           </div>
+
           <div className="text-center">
-            <div className="text-xs tracking-[0.3em] text-amber-100/50">FINAL SCORE</div>
-            <div className="font-black text-5xl sm:text-6xl gold-text tabular-nums">{shown.toLocaleString()}</div>
-            {info.bonus > 0 && <div className="text-emerald-300 text-sm font-bold">incl. dawn bonus +{info.bonus.toLocaleString()}</div>}
+            <div className="text-[10px] tracking-[0.36em] text-[var(--cs-dim)] mb-1">FINAL SCORE</div>
+            <div className="font-display font-black text-6xl sm:text-7xl cs-title tabular-nums leading-none">{shown.toLocaleString()}</div>
+            {info.bonus > 0 && <div className="text-[var(--cs-green)] text-xs font-semibold tracking-[0.14em] uppercase mt-2">Includes dawn bonus +{info.bonus.toLocaleString()}</div>}
           </div>
-          <div className="grid grid-cols-4 gap-2 text-center text-xs">
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Lasted</div><div className="font-black text-amber-200">Night {nightNumber(info.time)}</div><div className="text-[10px] text-amber-100/60">{formatClock(info.time)}</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Building</div><div className="font-black text-amber-200">#{info.levelNum}</div><div className="text-[10px] text-amber-100/60 truncate">{info.levelName}</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Manor</div><div className="font-black text-amber-200">{Math.round(info.overall * 100)}%</div></div>
-            <div className="bg-white/5 rounded-lg p-2"><div className="text-amber-100/50">Coins</div><div className="font-black text-amber-200">{info.coinsEarned}</div></div>
-          </div>
+
+          <StatStrip>
+            <Stat label="Building" value={`#${info.levelNum}`} sub={info.levelName} />
+            <Stat label="Nights" value={info.nights} />
+            <Stat label="Clean" value={`${Math.round(info.overall * 100)}%`} />
+            <Stat label="Coins" value={info.coinsEarned.toLocaleString()} />
+          </StatStrip>
 
           {canEnter && saved === null && canRevive && (
             <button
               type="button"
-              onClick={() => setDeclined(true)}
-              className="text-xs font-bold text-amber-200/80 bg-amber-300/10 border border-amber-300/30 rounded-xl px-3 py-2 hover:bg-amber-300/20"
+              onClick={() => { uiSound.select(); setDeclined(true); }}
+              className="text-xs font-semibold tracking-wide text-[var(--cs-gold-hi)] border border-[var(--cs-line)] bg-[rgba(217,180,90,0.08)] px-4 py-2.5 hover:bg-[rgba(217,180,90,0.16)] transition-colors"
             >
-              🏆 High score! End the run here and record it instead of recharging
+              New high score. End the run here and record it instead of recharging.
             </button>
           )}
 
           {canEnter && saved === null && !canRevive && (
-            <form
-              className="flex gap-2 items-center bg-amber-300/10 border border-amber-300/30 rounded-xl p-2"
-              onSubmit={(e) => { e.preventDefault(); save(); }}
-            >
-              <span className="text-sm font-bold text-amber-200 pl-1 whitespace-nowrap">🏆 New high score!</span>
-              <input
-                autoFocus={!isTouch}
-                value={name}
-                maxLength={12}
-                onChange={(e) => setName(e.target.value.toUpperCase())}
-                placeholder="YOUR NAME"
-                className="flex-1 min-w-0 bg-black/50 border border-white/20 rounded-lg px-3 py-2 font-bold tracking-widest text-amber-50 outline-none focus:border-amber-300 select-text"
-              />
-              <button type="submit" className="btn-gold rounded-lg px-4 py-2 font-black">SAVE</button>
+            <form className="flex flex-col gap-2" onSubmit={(e) => { e.preventDefault(); save(); }}>
+              <SectionTitle>NEW HIGH SCORE</SectionTitle>
+              <div className="flex gap-2">
+                <input
+                  autoFocus={!isTouch}
+                  value={name}
+                  maxLength={12}
+                  onChange={(e) => setName(e.target.value.toUpperCase())}
+                  placeholder="ENTER YOUR NAME"
+                  className="cs-input tracking-[0.2em] font-display"
+                />
+                <Button type="submit" variant="primary" className="shrink-0">Record</Button>
+              </div>
             </form>
           )}
 
           {DEV_MODE && (
-            <div className="text-center text-xs font-semibold text-fuchsia-200/80 bg-fuchsia-400/10 border border-fuchsia-300/30 rounded-xl px-3 py-2">
-              🛠 Dev mode — high scores are disabled
+            <div className="text-center text-xs font-semibold text-fuchsia-200/80 bg-fuchsia-400/10 border border-fuchsia-300/30 px-3 py-2">
+              Dev mode: high scores are disabled
             </div>
           )}
 
-          <div className="bg-black/30 rounded-xl p-2 max-h-56 overflow-y-auto scrollbar-thin">
-            <ScoreTable scores={scores} highlight={saved ?? undefined} />
+          <div>
+            <SectionTitle>HALL OF FAME</SectionTitle>
+            <div className="max-h-56 overflow-y-auto scrollbar-thin">
+              <ScoreTable scores={scores} highlight={saved ?? undefined} />
+            </div>
           </div>
 
           {info.reason === 'battery' && (
             canRevive ? (
-              <button onClick={onRevive} className="btn-gold rounded-xl py-3 font-black tracking-widest flex flex-col items-center">
-                <span className="text-lg">🔋 RECHARGE & KEEP PLAYING</span>
-                <span className="text-xs font-bold opacity-75 tracking-normal">
-                  Costs {info.reviveCost.toLocaleString()} 🪙 of your {info.coins.toLocaleString()} · score and progress kept
+              <Button variant="primary" onClick={onRevive} className="!min-h-[64px] w-full">
+                <span className="flex flex-col items-center gap-1">
+                  <span>Recharge &amp; keep playing</span>
+                  <span className="font-[family-name:var(--font-ui)] text-[11px] font-semibold tracking-[0.04em] normal-case opacity-75">
+                    Costs {info.reviveCost.toLocaleString()} of your {info.coins.toLocaleString()} coins · score and progress kept
+                  </span>
                 </span>
-              </button>
+              </Button>
             ) : info.reviveCost === 0 && (
-              <div className="text-center text-xs text-amber-100/50 bg-white/5 rounded-xl px-3 py-2">
-                🔋 Recharging to keep playing costs at least {REVIVE_MIN} 🪙 — you have {info.coins.toLocaleString()}.
+              <div className="text-center text-xs text-[var(--cs-dim)] border border-white/10 px-3 py-2.5">
+                Recharging costs at least {REVIVE_MIN} coins. You have {info.coins.toLocaleString()}.
               </div>
             )
           )}
 
-          <div className="flex gap-2">
-            <button onClick={onRestart} className="btn-gold flex-1 rounded-xl py-3 font-black tracking-widest text-lg">
-              ↻ PLAY AGAIN {!isTouch && <span className="opacity-60 text-sm">(R)</span>}
-            </button>
-            <button onClick={onMenu} className="btn-ghost rounded-xl px-5 font-bold">⌂ Menu</button>
+          <div className="flex flex-col sm:flex-row gap-2.5">
+            <Button variant={canRevive ? 'secondary' : 'primary'} onClick={onRestart} className="flex-1" hint={!isTouch ? 'R' : undefined}>Play again</Button>
+            <Button onClick={onMenu} className="sm:w-44">Main menu</Button>
           </div>
-          {onDesigner && (
-            <button onClick={onDesigner} className="btn-ghost rounded-xl py-2.5 font-bold text-cyan-200">🛠️ Back to Level Editor</button>
-          )}
-        </div>
+          {onDesigner && <Button onClick={onDesigner} className="w-full">Back to level editor</Button>}
+        </Frame>
       </div>
     </div>
   );

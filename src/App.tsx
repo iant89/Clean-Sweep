@@ -8,6 +8,7 @@ import DevMenu, { DEV_MODE } from './components/DevMenu';
 import LevelDesigner from './components/LevelDesigner';
 import type { LevelDef } from './game/levels';
 import { getAutosave, listSaves, loadSave } from './game/saves';
+import { KeyCap, bindUiSfx } from './components/ui';
 
 interface Toast { id: number; text: string; kind: ToastKind }
 
@@ -68,6 +69,7 @@ export default function App() {
         gameRef.current = g;
         setGame(g);
         setMuted(g.sfx.muted);
+        bindUiSfx(g.sfx);
       } catch (e) {
         console.error(e);
         setError('Your browser could not start WebGL. Please try another browser or device.');
@@ -76,6 +78,7 @@ export default function App() {
     }, 30);
     return () => {
       clearTimeout(id);
+      bindUiSfx(null);
       g?.dispose();
       gameRef.current = null;
     };
@@ -201,9 +204,9 @@ export default function App() {
           <div className="absolute inset-0" onPointerDown={() => game?.skipIntro()} />
           <button
             onClick={() => game?.skipIntro()}
-            className="absolute right-4 bottom-[calc(9vh+12px)] btn-ghost rounded-full px-4 py-1.5 text-sm font-semibold text-amber-100/80"
+            className="absolute right-5 bottom-[calc(9vh+14px)] flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[var(--cs-ink)] hover:text-[var(--cs-gold-hi)] transition-colors"
           >
-            Skip ⏭
+            {!isTouch && <KeyCap>Space</KeyCap>}Skip
           </button>
         </>
       )}
@@ -214,9 +217,9 @@ export default function App() {
           <div className="absolute inset-x-0 bottom-0 h-[9vh] bg-black pointer-events-none" />
           <button
             onClick={() => game?.skipTidy()}
-            className="absolute right-4 bottom-[calc(9vh+12px)] btn-ghost rounded-full px-4 py-1.5 text-sm font-semibold text-amber-100/80"
+            className="absolute right-5 bottom-[calc(9vh+14px)] flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[var(--cs-ink)] hover:text-[var(--cs-gold-hi)] transition-colors"
           >
-            Skip ⏭
+            {!isTouch && <KeyCap>Space</KeyCap>}Skip
           </button>
         </>
       )}
@@ -228,6 +231,8 @@ export default function App() {
           seenIntro={seenIntro}
           autosave={autosave}
           saveCount={saveCount}
+          muted={muted}
+          onMute={() => game?.toggleMute()}
           onContinue={continueRun}
           onLoadMenu={() => setSaveMenu('load')}
           onDesigner={() => { designerSeedRef.current = null; setDesigner(true); }}
@@ -238,6 +243,7 @@ export default function App() {
         <PauseMenu
           hud={hud}
           muted={muted}
+          isTouch={isTouch}
           onResume={() => game?.resume()}
           onRestart={() => { if (playtesting) { const g = gameRef.current; if (g) g.startRun(false, g.level); } else play(false); }}
           onMenu={() => game?.toMenu()}
@@ -289,14 +295,19 @@ export default function App() {
       )}
 
       {loading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#07050a]">
-          <div className="font-display font-black text-4xl gold-text tracking-widest">CLEAN SWEEP</div>
-          <div className="text-amber-100/60 text-sm blink-soft">Unlocking the manor doors…</div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-[#07050a]">
+          <div className="text-[10px] tracking-[0.42em] text-[var(--cs-dim)] font-display">MIDNIGHT AT BLACKWOOD MANOR</div>
+          <div className="font-display font-black text-5xl sm:text-6xl cs-title tracking-[0.06em] leading-none">CLEAN SWEEP</div>
+          <div className="cs-loadbar" />
+          <div className="text-[11px] uppercase tracking-[0.3em] text-[var(--cs-dim)]">Unlocking the manor doors</div>
         </div>
       )}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
-          <div className="panel rounded-2xl p-6 max-w-sm">{error}</div>
+          <div className="cs-frame p-8 max-w-sm text-sm leading-relaxed text-[var(--cs-ink)]">
+            <div className="font-display font-bold tracking-[0.2em] text-[var(--cs-red)] mb-2">UNABLE TO START</div>
+            {error}
+          </div>
         </div>
       )}
     </div>
