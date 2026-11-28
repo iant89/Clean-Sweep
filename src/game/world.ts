@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import {
   COLS, DOCK, DOORS, FURNITURE, Facing, FurnDef, LEVEL, ROOMS, ROWS, RUGS, SECRET_DOORS, TILE, WALL_H, WORLD_H, WORLD_W,
@@ -194,8 +194,17 @@ class SB {
   sph(mat: THREE.Material, cx: number, cy: number, cz: number, r: number, seg = 10) {
     this.place(new THREE.SphereGeometry(r, seg, Math.max(6, seg - 3)), mat, cx, cy, cz);
   }
-  torus(mat: THREE.Material, cx: number, cy: number, cz: number, r: number, t: number) {
-    this.place(new THREE.TorusGeometry(r, t, 6, 20), mat, cx, cy, cz, Math.PI / 2);
+  torus(mat: THREE.Material, cx: number, cy: number, cz: number, r: number, t: number, seg = 20) {
+    this.place(new THREE.TorusGeometry(r, t, 6, seg), mat, cx, cy, cz, Math.PI / 2);
+  }
+  /** Box with rounded edges (radius clamped to fit), bottom at y0 like box(). */
+  rbox(mat: THREE.Material, cx: number, y0: number, cz: number, w: number, h: number, d: number, r: number, ry = 0, rx = 0, rz = 0) {
+    const rr = Math.max(0.002, Math.min(r, w / 2 - 0.002, h / 2 - 0.002, d / 2 - 0.002));
+    this.place(new RoundedBoxGeometry(w, h, d, 2, rr), mat, cx, y0 + h / 2, cz, rx, ry, rz);
+  }
+  /** Turned profile (radius, height) pairs, bottom at y0: legs, balusters, pots, finials. */
+  lathe(mat: THREE.Material, cx: number, y0: number, cz: number, prof: [number, number][], seg = 12) {
+    this.place(new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), seg), mat, cx, y0, cz);
   }
   frame(x: number, z: number, ry: number, y = 0) {
     this.m.makeRotationY(ry);
@@ -223,7 +232,10 @@ class SB {
         if (!arr) { arr = []; cells.set(key, arr); }
         arr.push(g);
       }
-      for (const part of cells.values()) {
+      for (const raw of cells.values()) {
+        // some shapes (rounded boxes, polyhedra) come without an index; merging needs all or none,
+        // so weld those into indexed form (identical vertices only, so normals are kept)
+        const part = raw.some((g) => g.index) ? raw.map((g) => (g.index ? g : mergeVertices(g))) : raw;
         const merged = mergeGeometries(part, false);
         if (!merged) continue;
         const mesh = new THREE.Mesh(merged, mat);
@@ -896,6 +908,8 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array, wetTex: THRE
     window: L(0x24345e, { emissive: 0x1a2a55, emissiveIntensity: 1.6, side: THREE.DoubleSide, roughness: 0.08, metalness: 0.2 }),
     lamp: L(0xffe0a0, { emissive: 0xffc060, emissiveIntensity: 2.2 }),
     globe: L(0x2a6a8a, { roughness: 0.4 }),
+    crystal: L(0xe6f0ff, { emissive: 0x1a2230, roughness: 0.04, metalness: 0.15 }),
+    linen: L(0xe9e2d0, { roughness: 0.9 }),
   };
   const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1), side: THREE.DoubleSide, roughness: 0.55 }));
   return { M, portraits };
@@ -1124,21 +1138,46 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     }
     return best;
   };
+  /** Turned leg profile scaled to a height: foot, swell, waist, collar. */
+  const legProf = (h: number, r: number): [number, number][] => [
+    [0, 0], [r * 0.75, 0], [r * 0.8, h * 0.06], [r * 0.65, h * 0.12], [r * 0.95, h * 0.3], [r * 0.6, h * 0.55],
+    [r * 0.75, h * 0.7], [r, h * 0.78], [r, h * 0.97], [0, h],
+  ];
+  // Upholstered side chair: turned front legs, back posts running up into a carved top rail with
+  // brass finials, stretchers, a padded seat and an upholstered back panel.
   const chairParts = (seatMat: THREE.Material) => {
-    for (const lx of [-0.38, 0.38]) for (const lz of [-0.38, 0.38]) sb.box(M.woodDark, lx, 0, lz, 0.13, 0.85, 0.13);
-    sb.box(M.woodMed, 0, 0.85, 0, 0.95, 0.12, 0.95);
-    sb.box(seatMat, 0, 0.97, 0.03, 0.8, 0.08, 0.8);
-    sb.box(M.woodMed, 0, 0.97, -0.42, 0.95, 1.2, 0.1);
+    for (const lx of [-0.38, 0.38]) {
+      sb.lathe(M.woodDark, lx, 0, 0.38, legProf(0.86, 0.075), 10);
+      sb.rbox(M.woodDark, lx, 0, -0.4, 0.12, 2.12, 0.12, 0.03);
+      sb.sph(M.gold, lx, 2.17, -0.4, 0.07, 8);
+    }
+    for (const lz of [-0.38, 0.38]) sb.box(M.woodDark, 0, 0.3, lz, 0.68, 0.05, 0.05);
+    for (const lx of [-0.38, 0.38]) sb.box(M.woodDark, lx, 0.3, 0, 0.05, 0.05, 0.68);
+    sb.rbox(M.woodMed, 0, 0.82, 0, 0.98, 0.13, 0.98, 0.04);
+    sb.rbox(seatMat, 0, 0.93, 0.03, 0.86, 0.14, 0.84, 0.07);
+    sb.rbox(M.woodMed, 0, 1.93, -0.4, 0.94, 0.2, 0.11, 0.05);
+    sb.rbox(M.woodMed, 0, 1.08, -0.4, 0.8, 0.08, 0.09, 0.03);
+    sb.rbox(seatMat, 0, 1.18, -0.37, 0.66, 0.72, 0.08, 0.04);
   };
+  // Chesterfield-style sofa / armchair: bun feet, rounded body, rolled arms, loose seat and back cushions.
   const sofaParts = (w: number, d: number, mat: THREE.Material) => {
-    for (const lx of [-w / 2 + 0.2, w / 2 - 0.2]) for (const lz of [-d / 2 + 0.2, d / 2 - 0.2]) sb.box(M.woodDark, lx, 0, lz, 0.15, 0.2, 0.15);
-    sb.box(mat, 0, 0.2, 0, w, 0.55, d);
-    sb.box(mat, 0, 0.2, -d / 2 + 0.22, w, 1.35, 0.44);
-    sb.box(mat, -w / 2 + 0.2, 0.2, 0.05, 0.4, 0.95, d - 0.1);
-    sb.box(mat, w / 2 - 0.2, 0.2, 0.05, 0.4, 0.95, d - 0.1);
+    for (const lx of [-w / 2 + 0.2, w / 2 - 0.2]) for (const lz of [-d / 2 + 0.2, d / 2 - 0.2]) {
+      sb.lathe(M.woodDark, lx, 0, lz, [[0, 0], [0.07, 0], [0.09, 0.06], [0.08, 0.15], [0.06, 0.2], [0, 0.2]], 10);
+    }
+    sb.rbox(mat, 0, 0.2, 0, w, 0.5, d, 0.08);
+    sb.rbox(mat, 0, 0.2, -d / 2 + 0.22, w, 1.3, 0.44, 0.16);
+    for (const sx of [-1, 1]) {
+      const ax = sx * (w / 2 - 0.2);
+      sb.rbox(mat, ax, 0.2, 0.05, 0.4, 0.8, d - 0.1, 0.08);
+      sb.place(new THREE.CylinderGeometry(0.23, 0.23, d - 0.1, 16), mat, ax, 1.0, 0.05, Math.PI / 2);
+    }
     const n = Math.max(1, Math.round((w - 0.8) / 1.3));
     const cw = (w - 0.8) / n;
-    for (let k = 0; k < n; k++) sb.box(mat, -w / 2 + 0.4 + cw * (k + 0.5), 0.75, 0.15, cw - 0.06, 0.18, d - 0.6);
+    for (let k = 0; k < n; k++) {
+      const cx = -w / 2 + 0.4 + cw * (k + 0.5);
+      sb.rbox(mat, cx, 0.68, 0.14, cw - 0.06, 0.24, d - 0.6, 0.1);
+      sb.rbox(mat, cx, 0.86, -d / 2 + 0.52, cw - 0.08, 0.68, 0.22, 0.1, 0, -0.12);
+    }
   };
 
   for (const f of FURNITURE) {
@@ -1151,20 +1190,28 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       case 'table': {
         const h = f.h ?? 1.6;
         sb.frame(f.x, f.z, 0);
-        sb.box(M.woodMed, 0, h - 0.14, 0, w, 0.14, d);
-        sb.box(M.woodDark, 0, h - 0.3, 0, w - 0.3, 0.16, d - 0.3);
+        // moulded top with a thin dark lip, deep apron, turned legs
+        sb.rbox(M.woodMed, 0, h - 0.14, 0, w, 0.14, d, 0.05);
+        sb.rbox(M.woodDark, 0, h - 0.17, 0, w - 0.08, 0.04, d - 0.08, 0.02);
+        sb.rbox(M.woodDark, 0, h - 0.34, 0, w - 0.3, 0.2, d - 0.3, 0.03);
         const pts: [number, number][] = [];
         const nx = w > 6 ? 3 : 2;
         for (let k = 0; k < nx; k++) for (const lz of [-d / 2 + 0.22, d / 2 - 0.22]) {
           pts.push([-w / 2 + 0.22 + (k * (w - 0.44)) / (nx - 1), lz]);
         }
-        for (const [lx, lz] of pts) sb.box(M.woodDark, lx, 0, lz, 0.18, h - 0.14, 0.18);
+        for (const [lx, lz] of pts) sb.lathe(M.woodDark, lx, 0, lz, legProf(h - 0.14, 0.12), 12);
         if (w > 6) {
-          sb.box(M.white, 0, h, 0, w - 1, 0.02, 1.2);
-          for (const lx of [-3, 0, 3]) { sb.cyl(M.gold, lx, h, 0, 0.08, 0.15, 0.6); sb.cyl(M.white, lx, h + 0.6, 0, 0.05, 0.05, 0.3); }
+          // a linen runner and brass candlesticks with lit candles
+          sb.box(M.linen, 0, h, 0, w - 1, 0.02, 1.2);
+          for (const lx of [-3, 0, 3]) {
+            sb.lathe(M.gold, lx, h, 0, [[0, 0], [0.16, 0], [0.16, 0.04], [0.06, 0.1], [0.04, 0.35], [0.08, 0.45], [0.09, 0.52], [0.06, 0.6], [0, 0.6]], 12);
+            sb.cyl(M.white, lx, h + 0.6, 0, 0.045, 0.05, 0.3, 10);
+            sb.sph(M.flame, lx, h + 0.95, 0, 0.05, 8);
+          }
         } else if (w > 2) {
-          sb.box(M.books[1], -0.6, h, 0.2, 0.7, 0.12, 0.5, 0.3);
-          sb.cyl(M.lamp, 0.8, h, -0.3, 0.12, 0.12, 0.25);
+          sb.rbox(M.books[1], -0.6, h, 0.2, 0.7, 0.12, 0.5, 0.02, 0.3);
+          sb.lathe(M.gold, 0.8, h, -0.3, [[0, 0], [0.12, 0], [0.12, 0.03], [0.04, 0.08], [0.03, 0.32], [0, 0.32]], 10);
+          sb.lathe(M.lamp, 0.8, h + 0.3, -0.3, [[0.05, 0], [0.18, 0.02], [0.13, 0.22], [0.05, 0.24]], 14);
         }
         sb.reset();
         legsCollide(f.x, f.z, 0, pts, 0.3);
@@ -1172,12 +1219,23 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       }
       case 'roundtable': {
         sb.frame(f.x, f.z, 0);
-        sb.cyl(M.woodDark, 0, 0, 0, 0.7, 0.9, 0.2, 16);
-        sb.cyl(M.woodDark, 0, 0.2, 0, 0.3, 0.4, 1.4, 12);
-        sb.cyl(M.woodMed, 0, 1.6, 0, w / 2, w / 2, 0.14, 28);
-        sb.cyl(M.marbleW, 0, 1.74, 0, 0.35, 0.25, 0.9, 12);
-        sb.sph(M.red, 0, 2.8, 0, 0.45, 10);
-        sb.sph(M.plant, 0.3, 2.6, 0.2, 0.3, 8);
+        // tripod-footed pedestal, bevelled top, a porcelain vase of roses
+        sb.lathe(M.woodDark, 0, 0, 0, [[0, 0], [0.85, 0], [0.9, 0.05], [0.7, 0.2], [0.4, 0.3], [0.28, 0.45], [0.36, 0.7], [0.22, 1.0], [0.26, 1.3], [0.4, 1.4], [0.42, 1.48], [0, 1.48]], 16);
+        sb.cyl(M.woodDark, 0, 1.48, 0, w / 2 - 0.08, w / 2 - 0.2, 0.12, 32);
+        sb.lathe(M.woodMed, 0, 1.6, 0, [[0, 0], [w / 2 - 0.03, 0], [w / 2, 0.04], [w / 2, 0.11], [w / 2 - 0.03, 0.14], [0, 0.14]], 36);
+        sb.lathe(M.marbleW, 0, 1.74, 0, [[0, 0], [0.18, 0], [0.2, 0.04], [0.33, 0.35], [0.3, 0.6], [0.16, 0.78], [0.2, 0.9], [0.16, 0.9], [0.14, 0.8], [0, 0.8]], 32);
+        // a loose bouquet: small red and white roses on a dome, a few leaves tucked under
+        for (let k = 0; k < 11; k++) {
+          const an = k * 2.4, rr = k === 0 ? 0 : 0.1 + 0.11 * Math.sqrt(k / 10);
+          sb.sph(k % 3 === 2 ? M.white : M.red, Math.cos(an) * rr, 2.78 - rr * 0.6, Math.sin(an) * rr, 0.085, 8);
+        }
+        for (let k = 0; k < 6; k++) {
+          const an = k * 1.05 + 0.5;
+          const leaf = new THREE.SphereGeometry(0.5, 8, 6);
+          leaf.scale(0.09, 0.3, 0.03);
+          leaf.translate(0, 0.15, 0);
+          sb.place(leaf, M.plant, Math.cos(an) * 0.12, 2.58, Math.sin(an) * 0.12, 0, -an, -1.1);
+        }
         sb.reset();
         addBox(f.x, f.z, 1.7, 1.7);
         break;
@@ -1203,20 +1261,32 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       case 'shelf': {
         const h = 4.2;
         sb.frame(f.x, f.z, a);
+        // carcass: back, sides, plinth and a stepped crown moulding
         sb.box(M.woodDark, 0, 0, -d / 2 + 0.06, w, h, 0.12);
-        sb.box(M.woodDark, -w / 2 + 0.07, 0, 0, 0.14, h, d);
-        sb.box(M.woodDark, w / 2 - 0.07, 0, 0, 0.14, h, d);
-        sb.box(M.woodDark, 0, h - 0.14, 0, w, 0.14, d);
-        sb.box(M.woodDark, 0, 0, 0, w, 0.25, d);
+        sb.rbox(M.woodDark, -w / 2 + 0.07, 0, 0, 0.14, h, d, 0.03);
+        sb.rbox(M.woodDark, w / 2 - 0.07, 0, 0, 0.14, h, d, 0.03);
+        sb.rbox(M.woodDark, 0, 0, 0.02, w + 0.06, 0.25, d + 0.04, 0.03);
+        sb.rbox(M.woodDark, 0, h - 0.14, 0, w, 0.14, d, 0.03);
+        sb.rbox(M.woodMed, 0, h, 0.03, w + 0.12, 0.08, d + 0.08, 0.03);
+        sb.rbox(M.woodDark, 0, h + 0.08, 0.05, w + 0.22, 0.1, d + 0.14, 0.04);
         for (let row = 0; row < 4; row++) {
           const y = 0.25 + row * 0.98;
-          sb.box(M.woodMed, 0, y + 0.86, 0, w - 0.2, 0.08, d - 0.1);
+          sb.rbox(M.woodMed, 0, y + 0.86, 0, w - 0.2, 0.08, d - 0.1, 0.02);
+          sb.box(M.gold, 0, y + 0.86, d / 2 - 0.06, w - 0.24, 0.02, 0.012);
           let x = -w / 2 + 0.18;
+          let bi = 0;
           while (x < w / 2 - 0.3) {
             const bw = 0.25 + rng() * 0.45;
             const bh = 0.55 + rng() * 0.28;
-            if (rng() > 0.12) sb.box(M.books[Math.floor(rng() * 5)], x + bw / 2, y, 0.05, bw - 0.03, bh, d - 0.35);
+            if (rng() > 0.12) {
+              const mat = M.books[Math.floor(rng() * 5)];
+              // every few books one leans on its neighbour; spines get a gilt band
+              const lean = (bi + row) % 7 === 3 ? 0.18 : 0;
+              sb.rbox(mat, x + bw / 2 + lean * 0.5, y + (lean ? 0.03 : 0), 0.05, bw - 0.03, bh, d - 0.35, 0.015, 0, 0, -lean);
+              if (!lean && bw > 0.32) sb.box(M.gold, x + bw / 2, y + bh * 0.78, (d - 0.35) / 2 + 0.051, bw - 0.05, 0.03, 0.01);
+            }
             x += bw;
+            bi++;
           }
         }
         sb.reset();
@@ -1229,17 +1299,35 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         sb.frame(f.x, f.z, a);
         const baseMat = f.v === 1 ? M.woodDark : M.white;
         sb.box(M.black, 0, 0, 0.05, w - 0.1, 0.15, d - 0.2);
-        sb.box(f.t === 'stove' ? M.black : baseMat, 0, 0.15, 0, w, 1.5, d);
-        sb.box(f.v === 1 ? M.woodMed : M.marbleW, 0, 1.65, 0, w + 0.1, 0.12, d + 0.1);
+        sb.rbox(f.t === 'stove' ? M.black : baseMat, 0, 0.15, 0, w, 1.5, d, 0.03);
+        sb.rbox(f.v === 1 ? M.woodMed : M.marbleW, 0, 1.65, 0, w + 0.1, 0.12, d + 0.1, 0.035);
         if (f.t === 'stove') {
           const burnerMat = f.v === 1 ? M.ember : M.steel;
-          for (const lx of [-0.6, 0.6]) for (const lz of [-0.35, 0.35]) sb.cyl(burnerMat, lx, 1.77, lz, 0.25, 0.25, 0.04, 14);
-        } else if (f.t === 'island') {
-          sb.sph(M.pot, -2, 1.95, 0, 0.3); sb.sph(M.plant2, -1.6, 1.9, 0.3, 0.2); sb.cyl(M.steel, 2, 1.77, 0.2, 0.35, 0.3, 0.4, 12);
-        } else if (f.v === 1) {
-          sb.cyl(M.gold, -1.5, 1.77, 0, 0.1, 0.18, 0.7); sb.cyl(M.marbleW, 1.2, 1.77, 0, 0.25, 0.15, 0.8);
+          for (const lx of [-0.6, 0.6]) for (const lz of [-0.35, 0.35]) {
+            sb.cyl(M.black, lx, 1.77, lz, 0.3, 0.3, 0.02, 18);
+            sb.torus(burnerMat, lx, 1.81, lz, 0.2, 0.03, 18);
+            sb.cyl(burnerMat, lx, 1.77, lz, 0.08, 0.08, 0.05, 12);
+          }
+          sb.rbox(M.steel, 0, 0.35, d / 2 + 0.005, w - 0.4, 0.9, 0.04, 0.02);
+          for (const lx of [-0.75, -0.25, 0.25, 0.75]) sb.cyl(M.steel, lx, 1.3, d / 2 + 0.02, 0.06, 0.06, 0.08, 12, Math.PI / 2);
         } else {
-          for (let k = -w / 2 + 0.7; k < w / 2; k += 1.2) sb.box(M.steel, k, 1.25, d / 2 + 0.03, 0.4, 0.05, 0.05);
+          // panelled cupboard doors with brass/steel pulls
+          const n = Math.max(1, Math.round(w / 1.2));
+          const dw = w / n;
+          for (let k = 0; k < n; k++) {
+            const cx = -w / 2 + dw * (k + 0.5);
+            sb.rbox(baseMat, cx, 0.24, d / 2 + 0.005, dw - 0.08, 1.3, 0.04, 0.015);
+            sb.box(f.v === 1 ? M.woodMed : M.marbleW, cx, 0.42, d / 2 + 0.026, dw - 0.36, 0.9, 0.01);
+            sb.rbox(f.v === 1 ? M.gold : M.steel, cx, 1.25, d / 2 + 0.04, 0.4, 0.05, 0.05, 0.02);
+          }
+          if (f.t === 'island') {
+            sb.lathe(M.pot, -2, 1.77, 0, [[0, 0], [0.22, 0], [0.32, 0.18], [0.28, 0.4], [0.2, 0.45], [0, 0.45]], 14);
+            sb.sph(M.plant2, -2, 2.3, 0, 0.26, 10);
+            sb.cyl(M.steel, 2, 1.77, 0.2, 0.35, 0.3, 0.4, 16);
+          } else if (f.v === 1) {
+            sb.lathe(M.gold, -1.5, 1.77, 0, [[0, 0], [0.18, 0], [0.12, 0.2], [0.06, 0.5], [0.1, 0.7], [0, 0.7]], 12);
+            sb.lathe(M.marbleW, 1.2, 1.77, 0, [[0, 0], [0.15, 0], [0.26, 0.4], [0.2, 0.7], [0.12, 0.8], [0, 0.8]], 14);
+          }
         }
         sb.reset();
         fullBox(f, w, d);
@@ -1294,10 +1382,25 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       }
       case 'plant': {
         sb.frame(f.x, f.z, a);
-        sb.cyl(M.pot, 0, 0, 0, 0.48, 0.36, 0.9, 12);
-        sb.sph(M.plant, 0, 1.35, 0, 0.62);
-        sb.sph(M.plant2, 0.3, 1.75, 0.15, 0.45);
-        sb.sph(M.plant, -0.25, 1.9, -0.2, 0.4);
+        // glazed urn with a rolled rim, dark soil, and a spray of drooping leaves in two greens
+        sb.lathe(M.pot, 0, 0, 0, [[0, 0], [0.32, 0], [0.36, 0.06], [0.3, 0.12], [0.42, 0.45], [0.48, 0.78], [0.44, 0.84], [0.52, 0.9], [0.5, 0.96], [0.42, 0.94], [0, 0.94]], 18);
+        sb.cyl(M.woodDark, 0, 0.9, 0, 0.42, 0.42, 0.03, 16);
+        const seed = Math.abs(Math.round(f.x * 13 + f.z * 7)) % 5;
+        for (let k = 0; k < 11; k++) {
+          const an = k * 2.4 + seed, tall = k < 4;
+          const len = tall ? 0.95 : 0.8, tilt = tall ? 0.45 : 1.05;
+          const leaf = new THREE.SphereGeometry(0.5, 8, 6);
+          leaf.scale(0.2, len, 0.06);
+          leaf.translate(0, len * 0.5, 0);
+          sb.place(leaf, k % 3 ? M.plant : M.plant2, 0, 0.92, 0, 0, -an, -tilt);
+        }
+        // an inner crown of young upright leaves fills the centre
+        for (let k = 0; k < 5; k++) {
+          const leaf = new THREE.SphereGeometry(0.5, 8, 6);
+          leaf.scale(0.16, 0.85, 0.05);
+          leaf.translate(0, 0.42, 0);
+          sb.place(leaf, M.plant2, 0, 0.92, 0, 0, -(k * 1.26 + seed), -0.15);
+        }
         sb.reset();
         addBox(f.x, f.z, 1.0, 1.0);
         break;
@@ -1315,10 +1418,25 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       }
       case 'clock': {
         sb.frame(f.x, f.z, a);
-        sb.box(M.woodDark, 0, 0, 0, 1.2, 3.9, 0.8);
-        sb.box(M.woodMed, 0, 3.9, 0, 1.35, 0.25, 0.9);
-        sb.place(new THREE.CylinderGeometry(0.4, 0.4, 0.05, 20), M.gold, 0, 3.2, 0.42, Math.PI / 2);
+        // longcase: plinth, narrow waist with a glazed pendulum door, hood with an arched pediment
+        sb.rbox(M.woodDark, 0, 0, 0, 1.3, 0.55, 0.85, 0.03);
+        sb.rbox(M.woodMed, 0, 0.55, 0.02, 1.24, 0.08, 0.82, 0.02);
+        sb.rbox(M.woodDark, 0, 0.63, 0, 1.08, 1.97, 0.76, 0.03);
+        sb.rbox(M.woodMed, 0, 2.6, 0.02, 1.24, 0.1, 0.82, 0.02);
+        sb.rbox(M.woodDark, 0, 2.7, 0, 1.2, 0.95, 0.8, 0.04);
+        sb.place(new THREE.CylinderGeometry(0.5, 0.5, 0.84, 24, 1, false, -Math.PI / 2, Math.PI), M.woodMed, 0, 3.65, 0, -Math.PI / 2, 0, 0);
+        for (const sx of [-0.5, 0, 0.5]) sb.lathe(M.gold, sx, sx ? 3.65 : 4.15, 0.1, [[0, 0], [0.07, 0], [0.05, 0.05], [0.08, 0.12], [0, 0.22]], 8);
+        for (const sx of [-0.5, 0.5]) sb.cyl(M.woodMed, sx, 2.75, 0.38, 0.06, 0.06, 0.9, 10);
+        // dial: brass bezel around an ivory face (the hands are added separately and animate)
+        sb.place(new THREE.TorusGeometry(0.4, 0.035, 8, 32), M.gold, 0, 3.2, 0.43);
+        sb.place(new THREE.CylinderGeometry(0.38, 0.38, 0.03, 32), M.white, 0, 3.2, 0.43, Math.PI / 2);
+        for (let k = 0; k < 12; k++) {
+          const an = (k / 12) * Math.PI * 2;
+          sb.box(M.black, Math.sin(an) * 0.31, 3.2 + Math.cos(an) * 0.31 - 0.03, 0.447, 0.025, 0.06, 0.005, 0, 0, -an);
+        }
+        // pendulum door: dark glass in a brass frame
         sb.box(M.black, 0, 0.8, 0.39, 0.6, 1.7, 0.04);
+        for (const [x, y, w2, h2] of [[0, 0.78, 0.68, 0.04], [0, 2.48, 0.68, 0.04], [-0.32, 0.8, 0.04, 1.7], [0.32, 0.8, 0.04, 1.7]] as const) sb.box(M.gold, x, y, 0.4, w2, h2, 0.03);
         sb.reset();
         fullBox(f, 1.2, 0.8);
         {
@@ -1635,18 +1753,46 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   const chand = (x: number, z: number, r: number, li: number) => {
     const flame = chandBulbs[li];
     sb.frame(x, z, 0);
-    sb.cyl(M.gold, 0, 3.4, 0, 0.03, 0.03, WALL_H - 3.4, 6);
-    sb.torus(M.gold, 0, 3.3, 0, r, 0.05);
-    sb.sph(M.gold, 0, 3.3, 0, 0.15);
+    // chain down from the ceiling rose
+    sb.lathe(M.gold, 0, WALL_H - 0.12, 0, [[0, 0], [0.3, 0], [0.32, 0.05], [0.2, 0.12], [0, 0.12]], 16);
+    for (let y = 3.95; y < WALL_H - 0.15; y += 0.16) sb.place(new THREE.TorusGeometry(0.05, 0.012, 4, 10), M.gold, 0, y, 0, 0, (y * 7) % 2 > 1 ? Math.PI / 2 : 0, 0);
+    // turned brass body
+    sb.lathe(M.gold, 0, 2.7, 0, [[0, 0], [0.06, 0.05], [0.05, 0.2], [0.16, 0.35], [0.22, 0.55], [0.14, 0.7], [0.08, 0.8], [0.12, 0.9], [0.06, 1.15], [0.08, 1.25], [0, 1.3]], 16);
+    // arms sweep out and up to drip cups and candles
     for (let k = 0; k < 8; k++) {
-      const an = (k / 8) * Math.PI * 2;
-      sb.cyl(M.white, Math.cos(an) * r, 3.3, Math.sin(an) * r, 0.04, 0.04, 0.22, 6);
-      sb.sph(flame, Math.cos(an) * r, 3.6, Math.sin(an) * r, 0.06, 6);
+      const an = (k / 8) * Math.PI * 2, cx = Math.cos(an) * r, cz = Math.sin(an) * r;
+      // a swan-neck arm: out of the body's waist, dipping, then curling up into the cup
+      const arm = new THREE.TubeGeometry(new THREE.CubicBezierCurve3(
+        new THREE.Vector3(0.1, 3.1, 0), new THREE.Vector3(r * 0.45, 2.85, 0),
+        new THREE.Vector3(r * 0.95, 2.95, 0), new THREE.Vector3(r, 3.28, 0),
+      ), 14, 0.03, 6);
+      sb.place(arm, M.gold, 0, 0, 0, 0, -an, 0);
+      sb.lathe(M.gold, cx, 3.28, cz, [[0, 0], [0.04, 0], [0.11, 0.06], [0.12, 0.08], [0.05, 0.06], [0, 0.06]], 10);
+      sb.cyl(M.white, cx, 3.34, cz, 0.04, 0.045, 0.22, 8);
+      sb.sph(flame, cx, 3.6, cz, 0.06, 6);
+      // crystal drops hang beneath each arm
+      const drop = new THREE.OctahedronGeometry(0.06);
+      drop.scale(0.8, 1.6, 0.8);
+      sb.place(drop, M.crystal, cx * 0.6, 3.05, cz * 0.6);
     }
+    // lower crystal ring and a finial
+    sb.torus(M.gold, 0, 3.15, 0, r * 0.45, 0.018, 24);
+    for (let k = 0; k < 12; k++) {
+      const an = (k / 12) * Math.PI * 2 + 0.26;
+      const drop = new THREE.OctahedronGeometry(0.045);
+      drop.scale(0.8, 1.7, 0.8);
+      sb.place(drop, M.crystal, Math.cos(an) * r * 0.45, 3.04, Math.sin(an) * r * 0.45);
+    }
+    const tip = new THREE.OctahedronGeometry(0.1);
+    tip.scale(0.8, 2, 0.8);
+    sb.place(tip, M.crystal, 0, 2.55, 0);
     sb.reset();
   };
   LEVEL.lights.forEach((l, li) => { for (const [x, z, r] of l.chands) chand(x, z, r, li); });
+  const beforeChand = introGroup.children.length;
   sb.build(introGroup);
+  // the chandeliers' own lights sit among their arms: as casters they'd throw giant spokes across the floor
+  introGroup.children.slice(beforeChand).forEach((o) => { o.userData.noShadow = true; });
   scene.add(introGroup);
 
   // ---- roomba & dock
@@ -1752,7 +1898,7 @@ export function enableShadows(world: World, renderer: THREE.WebGLRenderer) {
     // Outlines, sprites/points and see-through glow effects (flames, rings, the roomba's glow and
     // blob shadow) don't block light. Drawn into a shadow map they'd cast solid shapes and cost a
     // draw per shadow pass.
-    if (!(mesh as THREE.Mesh).isMesh || !castsLight(mesh.material)) { mesh.castShadow = false; return; }
+    if (!(mesh as THREE.Mesh).isMesh || !castsLight(mesh.material) || mesh.userData.noShadow) { mesh.castShadow = false; return; }
     // the floor is a large flat plane at y≈0 — receives but doesn't cast
     const isFloor = mesh.position.y <= 0.01 && mesh.geometry instanceof THREE.PlaneGeometry;
     if (isFloor) { mesh.receiveShadow = true; mesh.castShadow = false; return; }
