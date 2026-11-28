@@ -48,7 +48,7 @@ export class Engine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     if (opts.shadows) {
       this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap was removed in three r18x
     }
     const el = this.renderer.domElement;
     el.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';

@@ -4,7 +4,7 @@ import {
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS, LevelDef } from './levels';
-import { setMachineLook, buildGrid, buildWorld, enableShadows, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
+import { setMachineLook, buildGrid, buildWorld, enableShadows, ShadowCache, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
@@ -228,6 +228,8 @@ export class Game {
   // misc
   coinsList: Coin[] = [];
   coinMesh: THREE.InstancedMesh;
+  /** Redraws the chandeliers' shadow maps only when something they show has moved. */
+  private shadowCache!: ShadowCache;
   ghostSprite: THREE.Sprite;
   arrow: THREE.Group;
   popups: Popups;
@@ -329,6 +331,7 @@ export class Game {
     this.dirt.dustMul = 1 + 0.15 * n;
     this.world = buildWorld(this.dirt.tex, this.grid, this.dirt.wetTex);
     enableShadows(this.world, this.renderer);
+    this.shadowCache = new ShadowCache(this.world);
     setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
     const grid = this.grid;
@@ -1074,6 +1077,7 @@ export class Game {
     if (this.hudT <= 0 && (this.phase === 'playing' || this.phase === 'intro')) { this.hudT = 1 / 12; this.pushHud(); }
     this.mapT -= dt;
     if (this.mapT <= 0) { this.mapT = 0.15; this.drawMinimap(); }
+    this.shadowCache.update();
   };
 
   private updateMenu(dt: number) {
