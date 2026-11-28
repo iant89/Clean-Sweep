@@ -202,17 +202,35 @@ class SB {
     this.m.setPosition(x, y + this.tipY, z);
   }
   reset() { this.m.identity(); this.tip = 0; this.tipY = 0; }
+  /**
+   * Merge everything placed so far into one mesh per material per CHUNK×CHUNK patch of floor plan.
+   * Merging keeps draw calls low; splitting by area keeps each mesh small enough for the camera and
+   * each shadow-casting light to skip the parts of the house it can't see.
+   */
   build(parent: THREE.Object3D) {
+    const box = new THREE.Box3(), c = new THREE.Vector3();
     for (const [mat, geos] of this.map) {
-      const merged = mergeGeometries(geos, false);
+      const cells = new Map<string, THREE.BufferGeometry[]>();
+      for (const g of geos) {
+        g.computeBoundingBox();
+        box.copy(g.boundingBox!).getCenter(c);
+        const key = `${Math.floor(c.x / SB.CHUNK)},${Math.floor(c.z / SB.CHUNK)}`;
+        let arr = cells.get(key);
+        if (!arr) { arr = []; cells.set(key, arr); }
+        arr.push(g);
+      }
+      for (const part of cells.values()) {
+        const merged = mergeGeometries(part, false);
+        if (!merged) continue;
+        const mesh = new THREE.Mesh(merged, mat);
+        mesh.matrixAutoUpdate = false;
+        parent.add(mesh);
+      }
       geos.forEach((g) => g.dispose());
-      if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.matrixAutoUpdate = false;
-      parent.add(mesh);
     }
     this.map.clear();
   }
+  static readonly CHUNK = 16;
 }
 
 const facingRot = (f: Facing | undefined) => (f === 'n' ? Math.PI : f === 'e' ? Math.PI / 2 : f === 'w' ? -Math.PI / 2 : 0);
@@ -781,6 +799,8 @@ export interface World {
   soundSources: { kind: 'fire' | 'water'; x: number; z: number }[];
   /** Drive animated furniture. t: seconds; hours: in-game clock time in hours (12 = midnight). */
   animate(t: number, hours: number): void;
+  /** Animated furniture parts (clock hands, flames, globes...), which move every frame. */
+  animRoot: THREE.Group;
 }
 
 /** wetTex: how freshly mopped each bit of floor is (see DirtMap.wet). */
@@ -1536,10 +1556,16 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   const statics = new THREE.Group();
   sb.build(statics);
   // outline edges for every furniture mesh (only drawn while that furniture is faded)
+  // (all in one LineSegments: one draw call, since the shader discards everything not being faded)
   const outlineMat = makeOutlineMaterial(cut);
-  for (const child of [...statics.children]) {
+  const edgeGeos: THREE.BufferGeometry[] = [];
+  for (const child of statics.children) {
     if (!(child instanceof THREE.Mesh) || !fadeMats.has(child.material)) continue;
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry, 35), outlineMat);
+    edgeGeos.push(new THREE.EdgesGeometry(child.geometry, 35));
+  }
+  if (edgeGeos.length) {
+    const edges = new THREE.LineSegments(mergeGeometries(edgeGeos, false)!, outlineMat);
+    edgeGeos.forEach((g) => g.dispose());
     edges.matrixAutoUpdate = false;
     edges.renderOrder = 5;
     statics.add(edges);
@@ -1658,7 +1684,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     it.tidy = tidy;
   };
 
-  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, secrets, ambient, hemi, clocks, soundSources, mess, setMessState, animate };
+  return { scene, grid, boxes, roomba, dock, cut, introGroup, floorMat, lights, secrets, ambient, hemi, clocks, soundSources, mess, setMessState, animate, animRoot };
 }
 
 /**
@@ -1666,23 +1692,26 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
  * renderer has shadow maps enabled (Engine constructor with shadows: true).
  *   - Floor (large flat plane at y≈0) receives shadows.
  *   - Furniture + walls cast and receive.
- *   - The roomba casts a little ground shadow.
+ *   - The roomba doesn't cast (its blob shadow grounds it): every shadow map is cached, see ShadowCache.
  *   - Point lights and the directional moon light cast shadows.
  */
 export function enableShadows(world: World, renderer: THREE.WebGLRenderer) {
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // PCFSoftShadowMap was removed in three r18x; it fell back to this with a console warning
+  renderer.shadowMap.type = THREE.PCFShadowMap;
   world.scene.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!mesh.geometry) return;
+    // Outlines, sprites/points and see-through glow effects (flames, rings, the roomba's glow and
+    // blob shadow) don't block light. Drawn into a shadow map they'd cast solid shapes and cost a
+    // draw per shadow pass.
+    if (!(mesh as THREE.Mesh).isMesh || !castsLight(mesh.material)) { mesh.castShadow = false; return; }
     // the floor is a large flat plane at y≈0 — receives but doesn't cast
     const isFloor = mesh.position.y <= 0.01 && mesh.geometry instanceof THREE.PlaneGeometry;
     if (isFloor) { mesh.receiveShadow = true; mesh.castShadow = false; return; }
     mesh.castShadow = true;
     mesh.receiveShadow = true;
   });
-  // roomba casts a shadow too
-  world.roomba.group.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.castShadow = true; });
   // point lights: each casts a soft shadow from above
   for (const l of world.lights) {
     const pl = l.light;
@@ -1706,5 +1735,57 @@ export function enableShadows(world: World, renderer: THREE.WebGLRenderer) {
     sun.shadow.bias = -0.0008;
     sun.target.position.set(WORLD_W / 2, 0, WORLD_H / 2);
     world.scene.add(sun.target);
+  }
+}
+
+/** Whether a material is solid enough to cast a shadow (not an additive or depthless effect). */
+function castsLight(mat: THREE.Material | THREE.Material[]) {
+  const m = Array.isArray(mat) ? mat[0] : mat;
+  return !(m.transparent && (!m.depthWrite || m.blending === THREE.AdditiveBlending));
+}
+
+/**
+ * Keeps every shadow map cached. Each chandelier renders a cube shadow map (six passes over the
+ * scene) and the moon one more over the whole house, yet almost everything they see is walls and
+ * furniture that never move. So the maps are only redrawn when something in them changes: a mess
+ * item or secret wall moving, or the intro ceiling showing or hiding. Things that move all the time
+ * (the roomba, animated furniture) are left out of the maps so they're never baked in at a stale
+ * spot; the roomba's own blob shadow grounds it instead.
+ */
+export class ShadowCache {
+  private sig = NaN;
+  private casters: THREE.LightShadow[] = [];
+
+  constructor(private world: World) {
+    // the moving parts never cast; their shadow would be stuck wherever they were at the last redraw
+    for (const root of [world.roomba.group, world.animRoot]) root.traverse((o) => { o.castShadow = false; });
+    world.scene.traverse((o) => {
+      const l = o as THREE.Light & { shadow?: THREE.LightShadow };
+      if (l.isLight && l.castShadow && l.shadow) { l.shadow.autoUpdate = false; this.casters.push(l.shadow); }
+    });
+  }
+
+  /** Force the cached maps to be redrawn on the next frame. */
+  invalidate() { this.sig = NaN; }
+
+  /** Call once per frame, just before rendering. */
+  update() {
+    const sig = this.signature();
+    if (sig === this.sig) return;
+    this.sig = sig;
+    for (const s of this.casters) s.needsUpdate = true;
+  }
+
+  /** A cheap fingerprint of everything that can move or appear in the cached shadow maps. */
+  private signature() {
+    let h = this.world.introGroup.visible ? 1 : 0;
+    const add = (o: THREE.Object3D, k: number) => {
+      const p = o.position, q = o.quaternion;
+      h += k * (p.x * 1.3 + p.y * 2.7 + p.z * 3.1 + q.x * 5.3 + q.y * 7.1 + q.z * 11.3 + q.w * 13.7 + o.scale.y * 17.9 + (o.visible ? 19.1 : 0));
+    };
+    let k = 1;
+    for (const it of this.world.mess) for (const pt of it.parts) add(pt.obj, k += 0.37);
+    for (const sd of this.world.secrets) { add(sd.group, k += 0.37); add(sd.roof, k += 0.37); }
+    return h;
   }
 }
