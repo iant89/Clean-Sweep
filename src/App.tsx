@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Game, GameOverInfo, HudState, Phase, ToastKind } from './game/Game';
 import HUD from './components/HUD';
-import HUDNext from './components/HUDNext';
 import TouchControls from './components/TouchControls';
 import { GameOver, PauseMenu, Shop, StartScreen } from './components/Screens';
 import { SaveMenu } from './components/SaveMenu';
@@ -10,10 +9,6 @@ import LevelDesigner from './components/LevelDesigner';
 import type { LevelDef } from './game/levels';
 import { getAutosave, listSaves, loadSave } from './game/saves';
 import { KeyCap, bindUiSfx } from './components/ui';
-
-/** Preview of the redesigned HUD: open the game with ?hud=next. */
-const HUD_NEXT = typeof location !== 'undefined' && new URLSearchParams(location.search).get('hud') === 'next';
-const ActiveHUD = HUD_NEXT ? HUDNext : HUD;
 
 interface Toast { id: number; text: string; kind: ToastKind }
 
@@ -157,7 +152,7 @@ export default function App() {
       {phase === 'playing' && game && <TouchControls game={game} showTurbo={isTouch} />}
 
       {inPlay && hud && (
-        <ActiveHUD
+        <HUD
           hud={hud}
           minimapRef={minimapRef}
           onPause={() => game?.pause()}

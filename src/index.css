@@ -750,31 +750,31 @@ select option { background: #16121a; color: #f3ead8; }
 }
 .ed-chip-cyan { color: #c9f6fb; border-color: rgba(127, 233, 245, 0.45); letter-spacing: 0.06em; text-transform: none; font-size: 12px; font-weight: 500; }
 
-/* ==================================================================== HUD preview (?hud=next) */
+/* ==================================================================== in-game HUD */
 .cs-btn-primary .cs-key { color: #22150a; border-color: rgba(34, 21, 10, 0.45); background: rgba(255, 255, 255, 0.2); }
-.hud2-scrim {
+.hud-scrim {
   padding: 8px 12px 9px 8px;
   background: linear-gradient(90deg, rgba(8, 6, 10, 0.72), rgba(8, 6, 10, 0.45));
   border-left: 2px solid var(--cs-gold);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
-.hud2-scrim + .hud2-scrim, .hud2-scrim:not(:has(svg)) { padding-left: 12px; }
-.hud2-scrim-done { border-left-color: var(--cs-green); }
-.hud2-label { font-size: 9px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--cs-dim); }
-.hud2-bar { position: relative; height: 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
-.hud2-bar > div { height: 100%; transition: width 0.15s linear; }
-.hud2-ticks::after {
+.hud-scrim + .hud-scrim, .hud-scrim:not(:has(svg)) { padding-left: 12px; }
+.hud-scrim-done { border-left-color: var(--cs-green); }
+.hud-label { font-size: 9px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--cs-dim); }
+.hud-bar { position: relative; height: 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.hud-bar > div { height: 100%; transition: width 0.15s linear; }
+.hud-ticks::after {
   content: ''; position: absolute; inset: 0; pointer-events: none;
   background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(0, 0, 0, 0.55) calc(10% - 1px) 10%);
 }
-.hud2-map { position: relative; padding: 4px; background: rgba(8, 6, 10, 0.6); border: 1px solid var(--cs-line); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.hud2-prompt {
+.hud-map { position: relative; padding: 4px; background: rgba(8, 6, 10, 0.6); border: 1px solid var(--cs-line); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.hud-prompt {
   display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px;
   font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cs-ink-hi);
   background: linear-gradient(90deg, transparent, rgba(8, 6, 10, 0.75) 15%, rgba(8, 6, 10, 0.75) 85%, transparent);
   border-top: 1px solid var(--cs-line-soft); border-bottom: 1px solid var(--cs-line-soft);
 }
-.hud2-center { background: radial-gradient(50% 60% at 50% 45%, rgba(8, 6, 10, 0.72), rgba(8, 6, 10, 0.35) 65%, transparent 100%); }
-.hud2-center .cs-title { filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.9)); }
-@media (max-height: 520px) { .hud2-map canvas { width: 118px !important; } }
+.hud-center { background: radial-gradient(50% 60% at 50% 45%, rgba(8, 6, 10, 0.72), rgba(8, 6, 10, 0.35) 65%, transparent 100%); }
+.hud-center .cs-title { filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.9)); }
+@media (max-height: 520px) { .hud-map canvas { width: 118px !important; } }
