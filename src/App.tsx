@@ -8,15 +8,17 @@ import DevMenu, { DEV_MODE } from './components/DevMenu';
 import LevelDesigner from './components/LevelDesigner';
 import type { LevelDef } from './game/levels';
 import { getAutosave, listSaves, loadSave } from './game/saves';
+import { Icon, KeyCap, bindUiSfx } from './components/ui';
 
-interface Toast { id: number; text: string; kind: ToastKind }
+interface Toast { id: number; text: string; kind: ToastKind; detail?: string; out?: boolean }
 
-const toastStyle: Record<ToastKind, string> = {
-  info: 'border-cyan-300/40 text-cyan-50',
-  good: 'border-emerald-300/50 text-emerald-50',
-  warn: 'border-orange-300/60 text-orange-100',
-  bad: 'border-fuchsia-300/60 text-fuchsia-100',
-  big: 'border-amber-300/80 text-amber-100',
+/** Accent colour of each notification kind: the marker, the edge lines and the glow. */
+const TOAST_ACCENT: Record<ToastKind, string> = {
+  info: '#7fe9f5',
+  good: '#8fdcaa',
+  warn: '#ffb36b',
+  bad: '#e08cff',
+  big: '#e6c36a',
 };
 
 export default function App() {
@@ -43,11 +45,14 @@ export default function App() {
   const toastId = useRef(0);
   const isTouch = typeof window !== 'undefined' && (window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window);
 
-  const pushToast = useCallback((text: string, kind: ToastKind) => {
+  const pushToast = useCallback((text: string, kind: ToastKind, detail?: string) => {
     const id = ++toastId.current;
-    setToasts((t) => [...t.slice(-2), { id, text, kind }]);
+    setToasts((t) => [...t.slice(-2), { id, text, kind, detail }]);
     if (kind === 'big') setFlash((f) => f + 1);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'big' ? 3200 : 2600);
+    const life = kind === 'big' ? 3400 : 2700;
+    // fade out first, then drop it
+    setTimeout(() => setToasts((t) => t.map((x) => (x.id === id ? { ...x, out: true } : x))), life - 350);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), life);
   }, []);
 
   useEffect(() => {
@@ -68,6 +73,7 @@ export default function App() {
         gameRef.current = g;
         setGame(g);
         setMuted(g.sfx.muted);
+        bindUiSfx(g.sfx);
       } catch (e) {
         console.error(e);
         setError('Your browser could not start WebGL. Please try another browser or device.');
@@ -76,6 +82,7 @@ export default function App() {
     }, 30);
     return () => {
       clearTimeout(id);
+      bindUiSfx(null);
       g?.dispose();
       gameRef.current = null;
     };
@@ -168,14 +175,18 @@ export default function App() {
 
       {/* toasts */}
       {(phase === 'playing' || phase === 'intro' || phase === 'tidy') && (
-        <div className="absolute left-1/2 -translate-x-1/2 top-[150px] sm:top-[140px] flex flex-col items-center gap-2 pointer-events-none w-[92vw] max-w-xl">
-          {toasts.map((t) => (
-            <div
-              key={t.id}
-              className={`${t.kind === 'big' ? 'big-in text-base sm:text-xl font-black px-5 py-2.5' : 'toast-in text-xs sm:text-sm font-semibold px-4 py-1.5'} panel rounded-full border text-center ${toastStyle[t.kind]}`}
-              style={t.kind === 'big' ? { boxShadow: '0 0 30px rgba(255,210,100,0.45)' } : undefined}
-            >
-              {t.text}
+        <div className="absolute left-1/2 -translate-x-1/2 top-[210px] sm:top-[150px] flex flex-col items-center gap-2 pointer-events-none w-[94vw] max-w-2xl" aria-live="polite">
+          {toasts.map((t) => t.kind === 'big' ? (
+            <div key={t.id} className={`cs-banner ${t.out ? 'cs-toast-out' : ''}`} style={{ '--accent': TOAST_ACCENT.big } as React.CSSProperties}>
+              <div className="cs-banner-rule" />
+              <div className="font-display font-black cs-title text-2xl sm:text-[2.1rem] leading-none tracking-[0.12em] uppercase">{t.text}</div>
+              {t.detail && <div className="mt-2 text-[11px] sm:text-xs font-semibold tracking-[0.2em] uppercase text-[var(--cs-ink-hi)]">{t.detail}</div>}
+              <div className="cs-banner-rule" />
+            </div>
+          ) : (
+            <div key={t.id} className={`cs-toast ${t.out ? 'cs-toast-out' : ''}`} style={{ '--accent': TOAST_ACCENT[t.kind] } as React.CSSProperties}>
+              <span className="cs-toast-mark" />
+              <span>{t.text}</span>
             </div>
           ))}
         </div>
@@ -186,7 +197,7 @@ export default function App() {
         <div className="absolute inset-x-0 bottom-[18%] flex justify-center pointer-events-none px-4">
           <div
             key={caption.id}
-            className={`${caption.big ? 'big-in font-display font-black text-3xl sm:text-6xl gold-text drop-shadow-[0_4px_18px_rgba(0,0,0,0.9)]' : 'caption-in font-display text-lg sm:text-2xl text-amber-50/90'} text-center tracking-[0.12em]`}
+            className={`${caption.big ? 'big-in font-display font-black text-3xl sm:text-6xl cs-title drop-shadow-[0_3px_10px_rgba(0,0,0,0.9)]' : 'caption-in font-display text-lg sm:text-2xl text-amber-50/90'} text-center tracking-[0.12em]`}
             style={caption.big ? undefined : { textShadow: '0 2px 12px rgba(0,0,0,0.9)' }}
           >
             {caption.text}
@@ -201,9 +212,9 @@ export default function App() {
           <div className="absolute inset-0" onPointerDown={() => game?.skipIntro()} />
           <button
             onClick={() => game?.skipIntro()}
-            className="absolute right-4 bottom-[calc(9vh+12px)] btn-ghost rounded-full px-4 py-1.5 text-sm font-semibold text-amber-100/80"
+            className="absolute right-5 bottom-[calc(9vh+14px)] flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[var(--cs-ink)] hover:text-[var(--cs-gold-hi)] transition-colors"
           >
-            Skip ⏭
+            {!isTouch && <KeyCap>Space</KeyCap>}Skip
           </button>
         </>
       )}
@@ -214,9 +225,9 @@ export default function App() {
           <div className="absolute inset-x-0 bottom-0 h-[9vh] bg-black pointer-events-none" />
           <button
             onClick={() => game?.skipTidy()}
-            className="absolute right-4 bottom-[calc(9vh+12px)] btn-ghost rounded-full px-4 py-1.5 text-sm font-semibold text-amber-100/80"
+            className="absolute right-5 bottom-[calc(9vh+14px)] flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[var(--cs-ink)] hover:text-[var(--cs-gold-hi)] transition-colors"
           >
-            Skip ⏭
+            {!isTouch && <KeyCap>Space</KeyCap>}Skip
           </button>
         </>
       )}
@@ -228,6 +239,8 @@ export default function App() {
           seenIntro={seenIntro}
           autosave={autosave}
           saveCount={saveCount}
+          muted={muted}
+          onMute={() => game?.toggleMute()}
           onContinue={continueRun}
           onLoadMenu={() => setSaveMenu('load')}
           onDesigner={() => { designerSeedRef.current = null; setDesigner(true); }}
@@ -238,6 +251,7 @@ export default function App() {
         <PauseMenu
           hud={hud}
           muted={muted}
+          isTouch={isTouch}
           onResume={() => game?.resume()}
           onRestart={() => { if (playtesting) { const g = gameRef.current; if (g) g.startRun(false, g.level); } else play(false); }}
           onMenu={() => game?.toMenu()}
@@ -281,22 +295,27 @@ export default function App() {
       {playtesting && !designer && phase !== 'gameover' && (
         <button
           onClick={backToEditor}
-          className="absolute left-2 z-40 panel rounded-full px-3 py-1.5 text-xs font-semibold text-cyan-100 border border-cyan-400/40 hover:bg-cyan-400/15 pointer-events-auto"
-          style={{ bottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
+          className="absolute left-3 z-40 ed-chip ed-chip-cyan !h-8 hover:!bg-[rgba(127,233,245,0.14)] pointer-events-auto"
+          style={{ bottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
         >
-          🛠️ Editor
+          <Icon name="chevronLeft" className="w-3.5 h-3.5" />Back to editor
         </button>
       )}
 
       {loading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-[#07050a]">
-          <div className="font-display font-black text-4xl gold-text tracking-widest">CLEAN SWEEP</div>
-          <div className="text-amber-100/60 text-sm blink-soft">Unlocking the manor doors…</div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-[#07050a]">
+          <div className="text-[10px] tracking-[0.42em] text-[var(--cs-dim)] font-display">MIDNIGHT AT BLACKWOOD MANOR</div>
+          <div className="font-display font-black text-5xl sm:text-6xl cs-title tracking-[0.06em] leading-none">CLEAN SWEEP</div>
+          <div className="cs-loadbar" />
+          <div className="text-[11px] uppercase tracking-[0.3em] text-[var(--cs-dim)]">Unlocking the manor doors</div>
         </div>
       )}
       {error && (
         <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
-          <div className="panel rounded-2xl p-6 max-w-sm">{error}</div>
+          <div className="cs-frame p-8 max-w-sm text-sm leading-relaxed text-[var(--cs-ink)]">
+            <div className="font-display font-bold tracking-[0.2em] text-[var(--cs-red)] mb-2">UNABLE TO START</div>
+            {error}
+          </div>
         </div>
       )}
     </div>

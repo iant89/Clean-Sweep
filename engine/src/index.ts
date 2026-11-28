@@ -1,5 +1,7 @@
 export { Engine } from './Engine';
 export type { EngineOptions } from './Engine';
+export { PostFx } from './postfx';
+export type { PostFxOptions } from './postfx';
 export { Input, TouchStick, DEFAULT_KEYMAP } from './input';
 export type { Action, Stick, InputOptions } from './input';
 export { Mover, DEFAULT_MOVER } from './physics';

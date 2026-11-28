@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MAX_MANUAL, SaveMeta, deleteAllSaves, deleteSave, listSaves } from '../game/saves';
 import { formatShift } from './HUD';
+import { Button, Frame, FrameHeader, Icon, useEscape } from './ui';
 
 function ago(ts: number) {
   const s = Math.max(0, (Date.now() - ts) / 1000);
@@ -11,7 +12,7 @@ function ago(ts: number) {
 }
 
 /** A button that needs a second click to fire, for anything destructive. */
-function ConfirmButton({ label, confirm, onConfirm, className }: { label: string; confirm: string; onConfirm: () => void; className: string }) {
+function ConfirmButton({ label, confirm, onConfirm, variant = 'secondary', className = '' }: { label: string; confirm: string; onConfirm: () => void; variant?: 'primary' | 'secondary'; className?: string }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
@@ -19,12 +20,13 @@ function ConfirmButton({ label, confirm, onConfirm, className }: { label: string
     return () => clearTimeout(t);
   }, [armed]);
   return (
-    <button
+    <Button
+      variant={armed ? 'danger' : variant}
       onClick={() => { if (armed) { setArmed(false); onConfirm(); } else setArmed(true); }}
-      className={`${className} ${armed ? '!bg-red-500/30 !border-red-300/60 text-red-100' : ''}`}
+      className={`cs-btn-sm ${className}`}
     >
       {armed ? confirm : label}
-    </button>
+    </Button>
   );
 }
 
@@ -48,32 +50,29 @@ export function SaveMenu({ mode, inRun, version, onSave, onLoad, onClose }: Save
   useEffect(() => { setSaves(listSaves()); }, [version, tick]);
   const refresh = () => setTick((t) => t + 1);
 
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => {
-      if (e.code === 'Escape' && mode === 'load' && !inRun) { e.preventDefault(); onClose(); }
-    };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [mode, inRun, onClose]);
+  // in a run, Escape belongs to the game (it resumes play); on the title screen it closes this
+  useEscape(onClose, mode === 'load' && !inRun);
 
   const manual = saves.filter((s) => !s.auto);
   const full = manual.length >= MAX_MANUAL;
 
   const doSave = (id?: string) => {
     const res = onSave?.(id, id ? undefined : name);
-    if (res) { setMsg({ text: `Saved “${res.name}”`, ok: true }); setName(''); }
-    else setMsg({ text: full && !id ? 'All slots are full — overwrite or delete one.' : 'Could not save (browser storage full or blocked).', ok: false });
+    if (res) { setMsg({ text: `Saved \u201c${res.name}\u201d`, ok: true }); setName(''); }
+    else setMsg({ text: full && !id ? 'All slots are full. Overwrite or delete one.' : 'Could not save (browser storage full or blocked).', ok: false });
     refresh();
   };
 
+  let slot = 0;
   return (
-    <div className="absolute inset-0 bg-black/70 overflow-y-auto scrollbar-thin fade-in z-10" style={{ backdropFilter: 'blur(3px)' }}>
-      <div className="min-h-full flex items-center justify-center p-4">
-        <div className="panel rounded-2xl p-5 sm:p-6 w-full max-w-lg flex flex-col gap-4 big-in">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="font-display font-black text-2xl sm:text-3xl gold-text tracking-widest">{mode === 'save' ? 'SAVE / LOAD' : 'LOAD GAME'}</h2>
-            <button onClick={onClose} className="btn-ghost rounded-full w-9 h-9 font-bold" aria-label="Close">✕</button>
-          </div>
+    <div className="absolute inset-0 bg-black/70 overflow-y-auto scrollbar-thin fade-in z-10" style={{ backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)' }}>
+      <div className="min-h-full flex items-center justify-center p-3 sm:p-6">
+        <Frame className="w-full max-w-2xl p-5 sm:p-8 flex flex-col gap-5 cs-panel-in">
+          <FrameHeader
+            eyebrow={`${manual.length} of ${MAX_MANUAL} slots used · progress autosaves as you play`}
+            title={mode === 'save' ? 'SAVE / LOAD' : 'LOAD GAME'}
+            onClose={onClose}
+          />
 
           {mode === 'save' && (
             <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); doSave(); }}>
@@ -81,51 +80,57 @@ export function SaveMenu({ mode, inRun, version, onSave, onLoad, onClose }: Save
                 value={name}
                 maxLength={24}
                 onChange={(e) => setName(e.target.value)}
-                placeholder={full ? 'Slots full' : `Save ${manual.length + 1}`}
+                placeholder={full ? 'All slots full' : `Name this save (Save ${manual.length + 1})`}
                 disabled={full}
-                className="flex-1 min-w-0 bg-black/50 border border-white/20 rounded-lg px-3 py-2 font-semibold text-amber-50 outline-none focus:border-amber-300 select-text disabled:opacity-50"
+                className="cs-input"
               />
-              <button type="submit" disabled={full} className="btn-gold rounded-lg px-4 py-2 font-black whitespace-nowrap disabled:opacity-50">💾 New save</button>
+              <Button type="submit" variant="primary" disabled={full} className="shrink-0">New save</Button>
             </form>
           )}
-          {msg && <div className={`text-sm text-center ${msg.ok ? 'text-emerald-300' : 'text-red-300'}`}>{msg.text}</div>}
+          {msg && <div className={`text-xs tracking-wide ${msg.ok ? 'text-[var(--cs-green)]' : 'text-[var(--cs-red)]'}`}>{msg.text}</div>}
 
-          <div className="flex flex-col gap-2">
-            {saves.length === 0 && <div className="text-center text-amber-100/50 text-sm py-6">No saved shifts yet.</div>}
-            {saves.map((s) => (
-              <div key={s.id} className={`rounded-xl p-3 border flex flex-col sm:flex-row sm:items-center gap-2 ${s.auto ? 'bg-cyan-300/[0.07] border-cyan-300/30' : 'bg-white/[0.04] border-white/10'}`}>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-amber-50 truncate">{s.auto ? '⟳ Autosave' : s.name}</span>
-                    <span className="text-[11px] text-amber-100/40 whitespace-nowrap">{ago(s.date)}</span>
-                  </div>
-                  <div className="text-xs text-amber-100/60 tabular-nums">
-                    🕐 {formatShift(s.time)} · ⭐ {s.score.toLocaleString()} · 🪙 {s.coins} · 🏠 {s.levelName ?? 'Blackwood Manor'} {s.roomsCleared}/{s.roomsTotal ?? 10} · {Math.round(s.overall * 100)}% clean
-                  </div>
-                </div>
-                <div className="flex gap-1.5 flex-wrap">
-                  {inRun ? (
-                    <ConfirmButton label="Load" confirm="Replace run?" onConfirm={() => onLoad(s.id)} className="btn-ghost rounded-lg px-3 py-1.5 text-sm font-bold" />
-                  ) : (
-                    <button onClick={() => onLoad(s.id)} className="btn-gold rounded-lg px-3 py-1.5 text-sm font-black">Load</button>
-                  )}
-                  {mode === 'save' && !s.auto && (
-                    <ConfirmButton label="Overwrite" confirm="Sure?" onConfirm={() => doSave(s.id)} className="btn-ghost rounded-lg px-3 py-1.5 text-sm font-bold" />
-                  )}
-                  <ConfirmButton label="🗑" confirm="Delete?" onConfirm={() => { deleteSave(s.id); refresh(); }} className="btn-ghost rounded-lg px-3 py-1.5 text-sm font-bold" />
-                </div>
+          <div className="flex flex-col border-t border-[var(--cs-line-soft)]">
+            {saves.length === 0 && (
+              <div className="text-center py-10">
+                <div className="font-display text-sm tracking-[0.24em] text-[var(--cs-ink)]">NO SAVED SHIFTS</div>
+                <div className="text-xs text-[var(--cs-dim)] mt-1.5">Save from the pause menu during a run.</div>
               </div>
-            ))}
+            )}
+            {saves.map((s) => {
+              const num = s.auto ? 'A' : String(++slot).padStart(2, '0');
+              return (
+                <div key={s.id} className="group flex flex-col sm:flex-row sm:items-center gap-3 py-3.5 border-b border-[var(--cs-line-soft)] hover:bg-[rgba(217,180,90,0.04)] transition-colors">
+                  <div className="flex items-center gap-4 flex-1 min-w-0">
+                    <div className={`w-11 h-11 shrink-0 flex items-center justify-center font-display font-bold text-sm border ${s.auto ? 'border-[rgba(127,233,245,0.4)] text-[var(--cs-cyan)]' : 'border-[var(--cs-line)] text-[var(--cs-gold)]'}`}>{num}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-baseline gap-3">
+                        <span className="font-display font-bold tracking-wide text-[var(--cs-ink-hi)] truncate">{s.auto ? 'Autosave' : s.name}</span>
+                        <span className="text-[11px] text-[var(--cs-dim)] whitespace-nowrap">{ago(s.date)}</span>
+                      </div>
+                      <div className="text-xs text-[var(--cs-dim)] tabular-nums leading-snug mt-0.5">
+                        <span className="text-[var(--cs-ink)]">{s.levelName ?? 'Blackwood Manor'}</span> · {formatShift(s.time)} · {s.score.toLocaleString()} pts · {s.coins} coins · {s.roomsCleared}/{s.roomsTotal ?? 10} rooms · {Math.round(s.overall * 100)}% clean
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5 flex-wrap sm:justify-end pl-[60px] sm:pl-0">
+                    {inRun
+                      ? <ConfirmButton label="Load" confirm="Replace run?" onConfirm={() => onLoad(s.id)} />
+                      : <Button variant="primary" className="cs-btn-sm" onClick={() => onLoad(s.id)}>Load</Button>}
+                    {mode === 'save' && !s.auto && <ConfirmButton label="Overwrite" confirm="Sure?" onConfirm={() => doSave(s.id)} />}
+                    <ConfirmButton label="Delete" confirm="Delete?" onConfirm={() => { deleteSave(s.id); refresh(); }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
-          <div className="flex items-center justify-between gap-2 text-xs text-amber-100/50">
-            <span>{manual.length}/{MAX_MANUAL} save slots · progress autosaves as you play</span>
+          <div className="flex items-center justify-between gap-3">
+            <Button onClick={onClose}><Icon name="back" className="w-3.5 h-3.5" />Back</Button>
             {saves.length > 0 && (
-              <ConfirmButton label="Delete all" confirm="Delete ALL saves?" onConfirm={() => { deleteAllSaves(); refresh(); setMsg(null); }} className="btn-ghost rounded-lg px-3 py-1.5 font-bold" />
+              <ConfirmButton label="Delete all" confirm="Delete ALL saves?" onConfirm={() => { deleteAllSaves(); refresh(); setMsg(null); }} />
             )}
           </div>
-          <button onClick={onClose} className="btn-ghost rounded-xl py-2.5 font-bold">← Back</button>
-        </div>
+        </Frame>
       </div>
     </div>
   );

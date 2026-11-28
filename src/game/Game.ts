@@ -4,7 +4,7 @@ import {
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS, LevelDef } from './levels';
-import { setMachineLook, buildGrid, buildWorld, enableShadows, ShadowCache, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
+import { setMachineLook, buildGrid, buildWorld, enableShadows, applyEnvironment, ShadowCache, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
@@ -82,6 +82,8 @@ export interface GameOverInfo {
   reviveCost: number;
 }
 
+/** HDR multiplier for LEDs and bulbs, so they rise above the bloom threshold. */
+const GLOW = 1.9;
 const AMBIENT_NIGHT = new THREE.Color(0xb8b0d8);
 const AMBIENT_DAWN = new THREE.Color(0xffc88a);
 
@@ -95,7 +97,8 @@ export function reviveCost(coins: number) {
 export interface GameCallbacks {
   onPhase: (p: Phase) => void;
   onHud: (h: HudState) => void;
-  onToast: (text: string, kind: ToastKind) => void;
+  /** `detail` is a second line: used by 'big' banners for the reward or the name. */
+  onToast: (text: string, kind: ToastKind, detail?: string) => void;
   onCaption: (text: string | null, big?: boolean) => void;
   onGameOver: (info: GameOverInfo) => void;
   onMute: (m: boolean) => void;
@@ -255,6 +258,15 @@ export class Game {
       onBlur: this.onBlur,
       fov: 50, near: 0.1, far: 220,
       shadows: true,
+      exposure: 1.3,
+      postfx: {
+        bloom: { strength: 0.4, radius: 0.5, threshold: 0.95 },
+        vignette: 0.38,
+        grain: 0.03,
+        aberration: 1,
+        shadowTint: [0.0, 0.006, 0.022],
+        highlightTint: [0.022, 0.01, -0.006],
+      },
     });
     this.isTouch = this.engine.isTouch;
     this.renderer = this.engine.renderer;
@@ -273,7 +285,7 @@ export class Game {
     // coins
     const coinGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.07, 18);
     coinGeo.rotateX(Math.PI / 2);
-    this.coinMesh = new THREE.InstancedMesh(coinGeo, new THREE.MeshPhongMaterial({ color: 0xffc43a, emissive: 0x6a4000, shininess: 120, specular: 0xffffff }), 48);
+    this.coinMesh = new THREE.InstancedMesh(coinGeo, new THREE.MeshStandardMaterial({ color: 0xffd45e, emissive: 0xc07a10, emissiveIntensity: 1.1, roughness: 0.3, metalness: 0.75 }), 48);
     this.coinMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.coinMesh.frustumCulled = false;
     for (let i = 0; i < 48; i++) this.coinsList.push({ x: 0, z: 0, active: false, phase: Math.random() * 6 });
@@ -331,6 +343,7 @@ export class Game {
     this.dirt.dustMul = 1 + 0.15 * n;
     this.world = buildWorld(this.dirt.tex, this.grid, this.dirt.wetTex);
     enableShadows(this.world, this.renderer);
+    applyEnvironment(this.world, this.renderer);
     this.shadowCache = new ShadowCache(this.world);
     setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
@@ -470,7 +483,7 @@ export class Game {
       const a = (i / 60) * Math.PI * 2;
       this.glow.spawn(this.px, 0.4, this.pz, Math.cos(a) * 6, 2 + Math.random() * 3, Math.sin(a) * 6, 0.5, 1, 0.9, 0.4, 1, 4);
     }
-    this.cb.onToast(`${next.icon} NEW MACHINE: ${next.name.toUpperCase()}!`, 'big');
+    this.cb.onToast('New machine', 'big', next.name);
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1);
     this.pushHud();
     return true;
@@ -525,7 +538,7 @@ export class Game {
       this.isPlaytest = true; // suppress autosaves so the real game's saves are untouched
     } catch (e) {
       console.error('playCustomLevel failed', e);
-      this.cb.onToast('That level could not be built — back to the editor.', 'bad');
+      this.cb.onToast('That level could not be built. Back to the editor.', 'bad');
       this.toMenu();
     }
   }
@@ -788,7 +801,7 @@ export class Game {
     this.engine.resetClock();
     this.pushHud();
     this.drawMinimap();
-    this.cb.onToast('💾 Shift resumed — welcome back!', 'good');
+    this.cb.onToast('Shift resumed. Welcome back.', 'good');
   }
 
   // ------------------------------------------------------------ internals
@@ -815,10 +828,10 @@ export class Game {
     this.cb.onCaption(null);
     setTimeout(() => {
       if (this.phase !== 'playing' && this.phase !== 'paused') return;
-      this.cb.onToast(this.isTouch ? 'Drag anywhere to drive · Hold ⚡ for turbo' : 'WASD / Arrows to drive · Shift = Turbo', 'info');
+      this.cb.onToast(this.isTouch ? 'Drag anywhere to drive · Hold Turbo to boost' : 'WASD or arrows to drive · Shift for turbo', 'info');
     }, fromIntro ? 300 : 100);
     setTimeout(() => {
-      if (this.phase === 'playing') this.cb.onToast('Clean rooms to 100% for coins — every dawn pays a bonus!', 'good');
+      if (this.phase === 'playing') this.cb.onToast('Clean rooms to 100% for coins. Every dawn pays a bonus.', 'good');
     }, 3200);
   }
 
@@ -852,8 +865,8 @@ export class Game {
     const r = this.world.roomba;
     r.light.intensity = 12 * p;
     r.glow.material.opacity = p;
-    r.ledMat.color.setRGB(0, 0.9 * p, p);
-    r.eyeMat.color.setRGB(0.75 * p, 0.99 * p, p);
+    r.ledMat.color.setRGB(0, 0.9 * p, p).multiplyScalar(GLOW);
+    r.eyeMat.color.setRGB(0.75 * p, 0.99 * p, p).multiplyScalar(GLOW);
     r.eyes.forEach((e) => (e.scale.z = 0.2 + 0.8 * p));
   }
 
@@ -948,7 +961,7 @@ export class Game {
     this.sfx.noise(1.4, 140, 0.35);
     this.sfx.noise(0.5, 900, 0.12, 0.05, 'bandpass');
     [392, 523, 659, 784, 1047].forEach((f, i) => this.sfx.tone(f, 0.45, 'triangle', 0.13, 0, 0.5 + i * 0.1));
-    this.cb.onToast(`🗝️ SECRET ROOM FOUND: ${ROOMS[sd.room].name.toUpperCase()}! +${coins}🪙 +${bonus}`, 'big');
+    this.cb.onToast('Secret room found', 'big', `${ROOMS[sd.room].name} · +${coins} coins · +${bonus.toLocaleString()}`);
     this.popup('🗝️ SECRET!', '#ffd84d', 1.8, 1.5);
     for (let n = 0; n < 50; n++) {
       this.dust.spawn(sd.fx + sd.nx * 0.2, Math.random() * 3, sd.fz + (Math.random() - 0.5) * 2,
@@ -1351,7 +1364,7 @@ export class Game {
         }
       }
       l.light.intensity = l.base * k;
-      for (const m of l.bulbs) m.emissiveIntensity = 0.15 + 0.95 * k;
+      for (const m of l.bulbs) m.emissiveIntensity = (0.15 + 0.95 * k) * GLOW;
     });
   }
 
@@ -1448,7 +1461,7 @@ export class Game {
       if (hour === 0) this.dawnBreaks();
       else {
         const left = 5 - hour;
-        this.cb.onToast(`🕐 ${hour}:00 AM — ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
+        this.cb.onToast(`${hour}:00 AM · ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
         this.chimeClocks(hour);
       }
     }
@@ -1498,7 +1511,7 @@ export class Game {
         }
         if (!charging && !emptying && !this.fullHinted) {
           this.fullHinted = true;
-          this.cb.onToast(this.isTouch ? 'Fully charged! Tap SHOP for upgrades' : 'Fully charged! Press E for upgrades', 'good');
+          this.cb.onToast(this.isTouch ? 'Fully charged · Tap Shop for upgrades' : 'Fully charged · Press E for upgrades', 'good');
         }
         if (this.battery > bmax * 0.5) { this.warned30 = false; this.warned12 = false; }
         if (this.bin < this.binCap * 0.5) this.binWarned = false;
@@ -1537,7 +1550,7 @@ export class Game {
         this.binWarned = true;
         this.sfx.full();
         this.addTrauma(0.2);
-        this.cb.onToast('🗑️ DUST BIN FULL! Return to the dock to empty', 'warn');
+        this.cb.onToast('Dust bin full. Return to the dock to empty it.', 'warn');
         this.popup('BIN FULL!', '#ffb347', 1.2);
       }
       this.sfx.hum(0.55 + frac * 0.45, frac * (this.turbo ? 1.4 : 1) + Math.min(1, removedUnits * 40));
@@ -1562,7 +1575,7 @@ export class Game {
         this.popup('DOCKED ⚡', '#5dffb0', 1.1);
         if (!this.dockHinted) {
           this.dockHinted = true;
-          this.cb.onToast(this.isTouch ? 'Charging & emptying… Tap SHOP for upgrades' : 'Charging & emptying… Press E for upgrades', 'good');
+          this.cb.onToast(this.isTouch ? 'Charging and emptying · Tap Shop for upgrades' : 'Charging and emptying · Press E for upgrades', 'good');
         }
       }
 
@@ -1571,10 +1584,10 @@ export class Game {
       if (br < 0.3 && !this.warned30) {
         this.warned30 = true;
         this.sfx.low();
-        this.cb.onToast('🔋 Battery low — follow the arrow home!', 'warn');
+        this.cb.onToast('Battery low. Follow the arrow home.', 'warn');
       }
       if (br < 0.12) {
-        if (!this.warned12) { this.warned12 = true; this.cb.onToast('⚠️ CRITICAL BATTERY!', 'bad'); }
+        if (!this.warned12) { this.warned12 = true; this.cb.onToast('Critical battery', 'bad'); }
         this.critBeep -= dt;
         if (this.critBeep <= 0) { this.critBeep = 1.6; this.sfx.low(); }
       }
@@ -1663,7 +1676,7 @@ export class Game {
     this.score += pts;
     this.sfx.clear();
     this.addTrauma(0.35);
-    this.cb.onToast(`✨ ${ROOMS[i].name.toUpperCase()} SPOTLESS! +${coins}🪙 +${pts}`, 'big');
+    this.cb.onToast('Room spotless', 'big', `${ROOMS[i].name} · +${coins} coins · +${pts.toLocaleString()}`);
     this.popup(`+${coins} 🪙`, '#ffd84d', 1.6, 1.5);
     for (let k = 0; k < 110; k++) {
       const x = (c0 + Math.random() * w) * TILE, z = (r0 + Math.random() * h) * TILE;
@@ -1679,7 +1692,7 @@ export class Game {
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1.5);
     if (!ROOMS[i].secret && ROOMS.every((r, k) => r.secret || this.cleared[k]) && !this.levelDone) {
       this.levelDone = true;
-      setTimeout(() => this.cb.onToast(`🚚 ${this.nextLevelName} is calling — move on whenever you're ready!`, 'good'), 3200);
+      setTimeout(() => this.cb.onToast(`${this.nextLevelName} is calling. Move on whenever you're ready.`, 'good'), 3200);
     }
     // whole-manor bonus: once per night, so re-cleaning after a ghost visit doesn't pay it again
     if (!ROOMS[i].secret && this.manorBonusNight !== this.night && ROOMS.every((r, k) => r.secret || this.cleared[k])) {
@@ -1687,7 +1700,7 @@ export class Game {
       this.score += 5000;
       this.coins += 100;
       this.coinsEarned += 100;
-      setTimeout(() => this.cb.onToast(`🏆 ${LEVEL.name.toUpperCase()} IS SPOTLESS! +5000`, 'big'), 1200);
+      setTimeout(() => this.cb.onToast('Building complete', 'big', `${LEVEL.name} · +5,000`), 1200);
     }
   }
 
@@ -1775,7 +1788,7 @@ export class Game {
         this.dirt.total[room] = Math.max(1, this.dirt.total[room]);
       }
       this.sfx.ghost();
-      this.cb.onToast(`🌑 The sun sinks again… NIGHT ${n + 1} begins${count ? ` — mud is back in ${count} room${count === 1 ? '' : 's'}` : ''}!`, 'bad');
+      this.cb.onToast(`Night ${n + 1} begins${count ? `. Mud is back in ${count} room${count === 1 ? '' : 's'}` : ''}`, 'bad');
     }, 3200);
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 2);
   }
@@ -1801,7 +1814,7 @@ export class Game {
     this.engine.resetClock();
     this.autosaveT = AUTOSAVE_EVERY - 1;
     this.pushHud();
-    this.cb.onToast(`🔋 Recharged for ${cost}🪙 — back to work!`, 'good');
+    this.cb.onToast(`Recharged for ${cost} coins. Back to work.`, 'good');
     return true;
   }
 
@@ -1824,7 +1837,7 @@ export class Game {
       this.ghostSprite.scale.set(2.6, 2.6, 1);
       this.ghostSprite.material.rotation = 0;
       this.sfx.ghost();
-      this.cb.onToast(`👻 Ghostly muddy footprints in the ${ROOMS[room].name}!`, 'bad');
+      this.cb.onToast(`Ghostly footprints in the ${ROOMS[room].name}`, 'bad');
     }
     const g = this.ghost;
     if (!g) return;
@@ -1908,7 +1921,7 @@ export class Game {
     this.score += pts;
     this.addTrauma(0.3);
     this.sfx.ghostCatch();
-    this.cb.onToast(`👻 GHOST CAUGHT! +${coins}🪙 +${pts}`, 'big');
+    this.cb.onToast('Ghost caught', 'big', `+${coins} coins · +${pts.toLocaleString()}`);
     this.popup(`+${coins} 🪙`, '#a0e0ff', 1.6, 1.5);
     // burst of particles from the ghost's position
     for (let k = 0; k < 40; k++) {
@@ -1973,8 +1986,8 @@ export class Game {
     const t = performance.now() / 1000;
     if (r.machine >= 4) r.body.position.y = 0.2 + Math.sin(t * 3) * 0.04; // the hover cleaner floats
     if (r.beacon) {
-      if (r.machine === 3) r.beacon.color.setRGB(1, 0.6, 0.1).multiplyScalar(Math.sin(t * 9) > 0 ? 1 : 0.25);
-      else r.beacon.color.setRGB(0.45, 0.94, 1).multiplyScalar(0.7 + 0.3 * Math.sin(t * 6));
+      if (r.machine === 3) r.beacon.color.setRGB(1, 0.6, 0.1).multiplyScalar((Math.sin(t * 9) > 0 ? 1 : 0.25) * GLOW);
+      else r.beacon.color.setRGB(0.45, 0.94, 1).multiplyScalar((0.7 + 0.3 * Math.sin(t * 6)) * GLOW);
     }
     const spinning = playing && !this.docked && !this.ending;
     r.brushes[0].rotation.y += dt * (spinning ? 28 : 3);
@@ -1987,9 +2000,9 @@ export class Game {
       else if (br < 0.12) { const on = Math.sin(t * 14) > 0 ? 1 : 0.15; cr = on; cg = 0.1 * on; cb = 0.1 * on; }
       else if (br < 0.3) { cr = 1; cg = 0.55; cb = 0.1; }
       else if (this.mult > 1) { const p = 0.75 + 0.25 * Math.sin(t * (6 + this.mult * 2)); cr = 0.2 * this.mult * p * 0.4; cg = 0.95 * p; cb = p; }
-      r.ledMat.color.setRGB(cr, cg, cb);
+      r.ledMat.color.setRGB(cr, cg, cb).multiplyScalar(GLOW);
       const full = this.bin >= this.binCap - 0.01;
-      if (full) r.eyeMat.color.setRGB(1, 0.6, 0.2); else r.eyeMat.color.setRGB(0.75, 0.99, 1);
+      if (full) r.eyeMat.color.setRGB(1, 0.6, 0.2).multiplyScalar(GLOW); else r.eyeMat.color.setRGB(0.75, 0.99, 1).multiplyScalar(GLOW);
       this.blinkT -= dt;
       const blink = this.blinkT < 0.12;
       if (this.blinkT < 0) this.blinkT = 2 + Math.random() * 3;
@@ -2004,7 +2017,7 @@ export class Game {
     d.ringMat.opacity = this.homeHint ? 0.5 + 0.5 * pulse : 0.25 + 0.3 * pulse;
     const rs = 1 + (this.homeHint ? pulse * 0.25 : pulse * 0.08);
     d.ring.scale.set(rs, rs, rs);
-    d.stripMat.color.setRGB(0.2 * (0.5 + pulse * 0.5), 1 * (0.5 + pulse * 0.5), 0.6 * (0.5 + pulse * 0.5));
+    d.stripMat.color.setRGB(0.2, 1, 0.6).multiplyScalar((0.5 + pulse * 0.5) * GLOW);
     this.world.cut.uRoomba.value.set(this.px, 0, this.pz);
   }
 
