@@ -65,13 +65,14 @@ export function patchCutaway(mat: THREE.Material, cut: CutUniforms, darkBack = f
       }`,
     );
     if (darkBack) {
-      // inside faces of cut walls read as solid dark masonry. Set before tone mapping and colour-space
-      // conversion (linear values), so it's right both with and without post-processing.
-      shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <opaque_fragment>',
-        `#include <opaque_fragment>
-        if (!gl_FrontFacing) gl_FragColor = vec4(0.006, 0.0039, 0.0049, 1.0);`,
-      );
+      // Where the cut opens a wall up, its inside faces stand in for the cut cross-section: shade them
+      // as a flat, upward-facing slab in the wall-top colour, lit like the real wall tops around them,
+      // so a sliced wall reads as solid masonry rather than a hollow box.
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <color_fragment>', `#include <color_fragment>
+        if (!gl_FrontFacing) diffuseColor.rgb = vec3(0.0085, 0.0058, 0.0102);`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        if (!gl_FrontFacing) normal = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);`);
     }
   };
   mat.customProgramCacheKey = () => (darkBack ? 'cutD' : 'cut');
@@ -1001,11 +1002,44 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
       h++;
     }
     for (let y = r; y < r + h; y++) for (let x = c; x < c + w; x++) used[y * COLS + x] = 1;
-    const cx = (c + w / 2) * TILE, cz = (r + h / 2) * TILE;
-    const ww = w * TILE, dd = h * TILE;
-    sb.box(M.wainscot, cx, 0, cz, ww, 1.3, dd);
-    sb.box(M.wallpaper, cx, 1.3, cz, ww, WALL_H - 1.45, dd);
-    sb.box(M.cap, cx, WALL_H - 0.15, cz, ww, 0.15, dd);
+    // one cap quad over each merged rectangle of wall
+    sb.place(new THREE.PlaneGeometry(w * TILE, h * TILE), M.cap, (c + w / 2) * TILE, WALL_H, (r + h / 2) * TILE, -Math.PI / 2);
+  }
+  // Side faces only where wall meets floor (or the map edge), merged into runs and split into the
+  // panelling / wallpaper / cap bands. Building the walls as one shell, with no faces inside the
+  // masonry, means the cutaway never exposes coincident faces that would fight and flicker.
+  const isWallTile = (c: number, r: number) => c >= 0 && r >= 0 && c < COLS && r < ROWS && need[r * COLS + c] === 1;
+  const bands: [THREE.Material, number, number][] = [[M.wainscot, 0, 1.3], [M.wallpaper, 1.3, WALL_H - 0.15], [M.cap, WALL_H - 0.15, WALL_H]];
+  const sideRun = (x: number, z: number, len: number, ry: number) => {
+    for (const [mat, y0, y1] of bands) sb.place(new THREE.PlaneGeometry(len, y1 - y0), mat, x, (y0 + y1) / 2, z, 0, ry, 0);
+  };
+  // faces looking south (+z) and north (-z): scan each row
+  for (const [dr, ry] of [[1, 0], [-1, Math.PI]] as const) {
+    for (let r = 0; r < ROWS; r++) {
+      let start = -1;
+      for (let c = 0; c <= COLS; c++) {
+        const exposed = c < COLS && isWallTile(c, r) && !isWallTile(c, r + dr);
+        if (exposed && start < 0) start = c;
+        if (!exposed && start >= 0) {
+          sideRun(((start + c) / 2) * TILE, (dr > 0 ? r + 1 : r) * TILE, (c - start) * TILE, ry);
+          start = -1;
+        }
+      }
+    }
+  }
+  // faces looking east (+x) and west (-x): scan each column
+  for (const [dc, ry] of [[1, Math.PI / 2], [-1, -Math.PI / 2]] as const) {
+    for (let c = 0; c < COLS; c++) {
+      let start = -1;
+      for (let r = 0; r <= ROWS; r++) {
+        const exposed = r < ROWS && isWallTile(c, r) && !isWallTile(c + dc, r);
+        if (exposed && start < 0) start = r;
+        if (!exposed && start >= 0) {
+          sideRun((dc > 0 ? c + 1 : c) * TILE, ((start + r) / 2) * TILE, (r - start) * TILE, ry);
+          start = -1;
+        }
+      }
+    }
   }
 
   // ---- wall decor: paintings & windows
@@ -2072,9 +2106,15 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     const group = new THREE.Group();
     const ssb = new SB();
     const cx = (c + 0.5) * TILE, cz = (r + 0.5) * TILE;
-    ssb.box(wallM.wainscot, cx, 0, cz, TILE, 1.3, TILE);
-    ssb.box(wallM.wallpaper, cx, 1.3, cz, TILE, WALL_H - 1.45, TILE);
-    ssb.box(wallM.cap, cx, WALL_H - 0.15, cz, TILE, 0.15, TILE);
+    // a shell like the walls (no stacked boxes, so nothing coincides when it's cut), inset a hair
+    // so its sides never sit exactly on the neighbouring wall faces
+    const half = TILE / 2 - 0.015;
+    for (const [mat, y0, y1] of [[wallM.wainscot, 0, 1.3], [wallM.wallpaper, 1.3, WALL_H - 0.15], [wallM.cap, WALL_H - 0.15, WALL_H]] as const) {
+      for (const ry of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+        ssb.place(new THREE.PlaneGeometry(half * 2, y1 - y0), mat, cx + Math.sin(ry) * half, (y0 + y1) / 2, cz + Math.cos(ry) * half, 0, ry, 0);
+      }
+    }
+    ssb.place(new THREE.PlaneGeometry(half * 2, half * 2), wallM.cap, cx, WALL_H, cz, -Math.PI / 2);
     // crooked little portrait on the visible face
     const fx = cx + side * TILE / 2;
     ssb.frame(fx, cz, side > 0 ? Math.PI / 2 : -Math.PI / 2);
