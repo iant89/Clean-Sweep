@@ -35,24 +35,37 @@ export class Particles {
     this.geo.setAttribute('psize', new THREE.BufferAttribute(this.size, 1).setUsage(THREE.DynamicDrawUsage));
     this.geo.setAttribute('palpha', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
     this.mat = new THREE.ShaderMaterial({
-      uniforms: { uScale: { value: 500 } },
+      uniforms: { uScale: { value: 500 }, uHot: { value: additive ? 2.2 : 1 } },
       vertexShader: `
         attribute vec3 pcolor; attribute float psize; attribute float palpha;
         varying vec3 vC; varying float vA;
         uniform float uScale;
         void main(){
-          vC = pcolor; vA = palpha;
+          // colours are authored in sRGB; light them in linear like everything else
+          vC = pow(pcolor, vec3(2.2)); vA = palpha;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           gl_PointSize = max(1.0, psize * uScale / -mv.z);
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: `
         varying vec3 vC; varying float vA;
+        uniform float uHot;
         void main(){
-          float d = length(gl_PointCoord - 0.5);
-          if (d > 0.5) discard;
-          float a = smoothstep(0.5, ${additive ? '0.0' : '0.25'}, d) * vA;
-          gl_FragColor = vec4(vC, a);
+          vec2 p = gl_PointCoord - 0.5;
+          float d2 = dot(p, p) * 4.0;          // 0 at centre, 1 at the edge
+          if (d2 > 1.0) discard;
+          ${additive
+            // sparks: soft halo plus a white-hot core, bright enough to catch the bloom
+            ? `float halo = exp(-d2 * 4.5);
+          float core = exp(-d2 * 28.0);
+          vec3 col = (vC * halo + vec3(1.0) * core * 0.65) * uHot;
+          gl_FragColor = vec4(col * vA, 1.0);`
+            // dust: a soft, slightly lumpy puff with a lighter rim of light on top
+            : `float puff = 1.0 - smoothstep(0.25, 1.0, d2);
+          float lit = 0.85 + 0.3 * (0.5 - p.y);
+          gl_FragColor = vec4(vC * lit, puff * vA * 0.9);`}
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }`,
       transparent: true,
       depthWrite: false,
@@ -119,8 +132,9 @@ export class Particles {
       this.pos[i3 + 2] += this.vel[i3 + 2] * dt;
       if (this.pos[i3 + 1] < 0.03) { this.pos[i3 + 1] = 0.03; this.vel[i3 + 1] *= -0.4; }
       const t = this.life[i] / this.maxLife[i];
-      this.alpha[i] = Math.min(1, t * 2.5);
-      this.size[i] = this.baseSize[i] * (0.4 + 0.6 * t);
+      const age = 1 - t;
+      this.alpha[i] = Math.min(1, t * 2.5) * Math.min(1, age * 12 + 0.25);
+      this.size[i] = this.baseSize[i] * (age < 0.08 ? 0.5 + age * 6.25 : 0.35 + 0.65 * Math.sqrt(t));
       i++;
     }
     this.geo.setDrawRange(0, this.count);

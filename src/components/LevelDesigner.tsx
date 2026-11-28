@@ -7,7 +7,7 @@ import {
 } from '../game/constants';
 import { LevelDef, levelFromMap, SecretDoor } from '../game/levels';
 import { LEVELS } from '../game/levels';
-import { buildGrid, buildWorld, enableShadows, World } from '../game/world';
+import { applyEnvironment, buildGrid, buildWorld, enableShadows, World } from '../game/world';
 import { DirtMap } from '../game/dirt';
 import { Icon, IconName } from './ui';
 
@@ -425,7 +425,11 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
   // ============================================================ 3D setup
   useEffect(() => {
     const mount = mount3d.current!;
-    const engine = new Engine(mount, { update: frame, fov: 50, near: 0.1, far: 400, background: 0x0a0a12, shadows: true });
+    const engine = new Engine(mount, {
+      update: frame, fov: 50, near: 0.1, far: 400, background: 0x0a0a12, shadows: true, exposure: 1.2,
+      // same look as the game, minus grain and fringing (it's a tool)
+      postfx: { bloom: { strength: 0.45, radius: 0.5, threshold: 0.9 }, vignette: 0.18, grain: 0, aberration: 0 },
+    });
     engineRef.current = engine;
     engine.scene.add(pickerRef.current);
     // Suppress the browser context menu so right-drag can pan without interruption.
@@ -594,6 +598,7 @@ export default function LevelDesigner({ onExit, onPlay, initialDef }: { onExit: 
       world.secrets.forEach((sd) => { sd.group.visible = true; sd.roof.visible = false; }); // reveal secret rooms, keep fake-wall marker
       // shadows: floor receives, furniture + walls cast, point lights + moon light cast
       enableShadows(world, engine.renderer);
+      applyEnvironment(world, engine.renderer);
       // move pickers + ghost into the new scene
       world.scene.add(pickerRef.current, ghostRef.current, highlightRef.current);
       engine.scene = world.scene;

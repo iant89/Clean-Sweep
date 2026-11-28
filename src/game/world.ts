@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import {
   COLS, DOCK, DOORS, FURNITURE, Facing, FurnDef, LEVEL, ROOMS, ROWS, RUGS, SECRET_DOORS, TILE, WALL_H, WORLD_H, WORLD_W,
 } from './constants';
@@ -64,10 +65,12 @@ export function patchCutaway(mat: THREE.Material, cut: CutUniforms, darkBack = f
       }`,
     );
     if (darkBack) {
+      // inside faces of cut walls read as solid dark masonry. Set before tone mapping and colour-space
+      // conversion (linear values), so it's right both with and without post-processing.
       shader.fragmentShader = shader.fragmentShader.replace(
-        '#include <dithering_fragment>',
-        `#include <dithering_fragment>
-        if (!gl_FrontFacing) gl_FragColor = vec4(0.07, 0.05, 0.06, 1.0);`,
+        '#include <opaque_fragment>',
+        `#include <opaque_fragment>
+        if (!gl_FrontFacing) gl_FragColor = vec4(0.006, 0.0039, 0.0049, 1.0);`,
       );
     }
   };
@@ -121,9 +124,9 @@ export function patchOccluderFade(mat: THREE.Material, cut: CutUniforms) {
         if (occRim < 0.5 && 1.0 - 0.6 * fade < thr) discard;
       }`,
     ).replace(
-      '#include <dithering_fragment>',
-      `#include <dithering_fragment>
-      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.78), occRim * 0.4);`,
+      '#include <opaque_fragment>',
+      `#include <opaque_fragment>
+      gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.57), occRim * 0.4);`,
     );
   };
   mat.customProgramCacheKey = () => 'fade';
@@ -150,6 +153,7 @@ function makeOutlineMaterial(cut: CutUniforms) {
         float fade = occFade(vW);
         if (fade < 0.02) discard;
         gl_FragColor = vec4(uColor, 0.4 * fade);
+        #include <colorspace_fragment>
       }`,
     transparent: true,
     depthWrite: false,
@@ -548,8 +552,8 @@ export interface RoombaModel {
   brushes: THREE.Group[];
   light: THREE.PointLight;
   glow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
-  shell: THREE.MeshPhongMaterial;
-  top: THREE.MeshPhongMaterial;
+  shell: THREE.MeshPhysicalMaterial;
+  top: THREE.MeshPhysicalMaterial;
   /** Machine-specific extras (mop pad, canister, scrub deck, hover ring); rebuilt by setMachineLook. */
   extras: THREE.Group;
   /** Flashing beacon / hover ring material, driven from the game loop; null when the machine has none. */
@@ -573,7 +577,8 @@ export function setMachineLook(r: RoombaModel, machine: number) {
   r.extras = x;
   r.beacon = null;
   r.body.add(x);
-  const phong = (color: number, opts: THREE.MeshPhongMaterialParameters = {}) => new THREE.MeshPhongMaterial({ color, shininess: 80, specular: 0x555566, ...opts });
+  // glossy moulded plastic by default; parts override roughness/metalness where they're rubber or metal
+  const phong = (color: number, opts: THREE.MeshPhysicalMaterialParameters = {}) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.35, metalness: 0, clearcoat: 0.6, clearcoatRoughness: 0.2, ...opts });
   const add = (geo: THREE.BufferGeometry, mat: THREE.Material, px: number, py: number, pz: number, rx = 0, ry = 0, rz = 0) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(px, py, pz);
@@ -589,14 +594,14 @@ export function setMachineLook(r: RoombaModel, machine: number) {
   r.body.position.y = 0;
   switch (machine) {
     case 1: { // mop & sweep: clear water tank on top, blue mop pad trailing behind
-      add(new THREE.CylinderGeometry(0.2, 0.2, 0.16, 20), phong(0x6fc3ff, { transparent: true, opacity: 0.55 }), 0, 0.42, -0.2);
+      add(new THREE.CylinderGeometry(0.2, 0.2, 0.16, 20), phong(0x6fc3ff, { transparent: true, opacity: 0.55, roughness: 0.05, transmission: 0 }), 0, 0.42, -0.2);
       add(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 12), phong(0xffffff), 0, 0.52, -0.2);
-      add(new THREE.BoxGeometry(0.95, 0.04, 0.34), phong(0x2f7fd8, { shininess: 10 }), 0, 0.025, -0.5);
-      add(new THREE.BoxGeometry(0.9, 0.06, 0.06), phong(0x8a9aa6), 0, 0.07, -0.36);
+      add(new THREE.BoxGeometry(0.95, 0.04, 0.34), phong(0x2f7fd8, { roughness: 0.95, clearcoat: 0 }), 0, 0.025, -0.5);
+      add(new THREE.BoxGeometry(0.9, 0.06, 0.06), phong(0x8a9aa6, { metalness: 0.8, roughness: 0.3, clearcoat: 0 }), 0, 0.07, -0.36);
       break;
     }
     case 2: { // auto shop vac: canister, lid, hose arching to a wide front nozzle
-      const yellow = phong(0xf2b705), black = phong(0x1b1b1f);
+      const yellow = phong(0xf2b705), black = phong(0x1b1b1f, { roughness: 0.6, clearcoat: 0.2 });
       add(new THREE.CylinderGeometry(0.27, 0.3, 0.5, 24), yellow, 0, 0.59, -0.2);
       add(new THREE.CylinderGeometry(0.29, 0.29, 0.08, 24), black, 0, 0.88, -0.2);
       add(new THREE.CylinderGeometry(0.05, 0.05, 0.1, 10), black, 0, 0.96, -0.2);
@@ -605,7 +610,7 @@ export function setMachineLook(r: RoombaModel, machine: number) {
       break;
     }
     case 3: { // floor scrubber: tall housing, squeegee bar, orange beacon
-      const red = phong(0xb3261e), dark = phong(0x232124);
+      const red = phong(0xb3261e), dark = phong(0x232124, { roughness: 0.55, clearcoat: 0.2 });
       add(new THREE.BoxGeometry(0.62, 0.36, 0.5), red, 0, 0.52, -0.16);
       add(new THREE.BoxGeometry(0.66, 0.05, 0.54), dark, 0, 0.72, -0.16);
       add(new THREE.BoxGeometry(1.35, 0.07, 0.09), dark, 0, 0.05, -0.62);
@@ -618,7 +623,7 @@ export function setMachineLook(r: RoombaModel, machine: number) {
     case 4: { // hover cleaner: glowing thruster ring underneath, fins, a little dome
       r.beacon = new THREE.MeshBasicMaterial({ color: 0x7af0ff });
       add(new THREE.TorusGeometry(0.46, 0.05, 8, 40), r.beacon, 0, 0.02, 0, Math.PI / 2);
-      add(new THREE.SphereGeometry(0.2, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), phong(0x9fe8ff, { transparent: true, opacity: 0.6 }), 0, 0.34, -0.12);
+      add(new THREE.SphereGeometry(0.2, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), phong(0x9fe8ff, { transparent: true, opacity: 0.5, roughness: 0.04 }), 0, 0.34, -0.12);
       for (const sx of [-1, 1]) add(new THREE.BoxGeometry(0.04, 0.18, 0.3), phong(0x5b3fd1), sx * 0.5, 0.3, -0.3, 0, 0, sx * -0.4);
       break;
     }
@@ -630,60 +635,89 @@ function makeRoomba(): RoombaModel {
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
-  const shell = new THREE.MeshPhongMaterial({ color: 0x1d1f24, shininess: 90, specular: 0x666677 });
-  const top = new THREE.MeshPhongMaterial({ color: 0x2f333b, shininess: 120, specular: 0x8888aa });
-  const bump = new THREE.MeshPhongMaterial({ color: 0x8a8f99, shininess: 60 });
+  // ---- materials: clear-coated plastic shell, smoked-glass deck, rubber bumper, brushed metal
+  const shell = new THREE.MeshPhysicalMaterial({ color: 0x1d1f24, roughness: 0.38, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12 });
+  const top = new THREE.MeshPhysicalMaterial({ color: 0x2f333b, roughness: 0.18, metalness: 0.1, clearcoat: 1, clearcoatRoughness: 0.05 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x5c616b, roughness: 0.7 });
+  const seam = new THREE.MeshStandardMaterial({ color: 0x0b0c0e, roughness: 0.8 });
+  const metal = new THREE.MeshStandardMaterial({ color: 0xb9bec7, roughness: 0.28, metalness: 1 });
+  const tyre = new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.85 });
+  const lens = new THREE.MeshPhysicalMaterial({ color: 0x05070a, roughness: 0.05, metalness: 0.2, clearcoat: 1, clearcoatRoughness: 0.02 });
+  // LEDs are unlit; the game drives their colour in HDR so the bloom catches them
   const ledMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff });
   const eyeMat = new THREE.MeshBasicMaterial({ color: 0xbffcff });
-  const m1 = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.53, 0.26, 32), shell);
-  m1.position.y = 0.17;
-  body.add(m1);
-  const m2 = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.52, 0.04, 32), top);
-  m2.position.y = 0.32;
-  body.add(m2);
-  const bumper = new THREE.Mesh(new THREE.CylinderGeometry(0.565, 0.565, 0.16, 24, 1, true, -Math.PI / 2, Math.PI), bump);
-  bumper.position.y = 0.15;
-  body.add(bumper);
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.022, 6, 40), ledMat);
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.345;
-  body.add(ring);
-  const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.03, 16), ledMat);
-  btn.position.set(0, 0.345, -0.1);
-  body.add(btn);
+  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, parent: THREE.Object3D = body) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.rotation.set(rx, ry, rz);
+    parent.add(m);
+    return m;
+  };
+
+  // shell: a turned profile with a soft lower radius and a chamfered top edge
+  const prof = [
+    [0, 0.045], [0.5, 0.045], [0.535, 0.06], [0.55, 0.09], [0.552, 0.24], [0.545, 0.275], [0.525, 0.3], [0.495, 0.312], [0, 0.312],
+  ].map(([x, y]) => new THREE.Vector2(x, y));
+  add(new THREE.LatheGeometry(prof, 64), shell, 0, 0, 0);
+  // smoked-glass deck, slightly proud of the shell, with a fine bevel
+  const deck = [[0, 0.335], [0.455, 0.335], [0.47, 0.328], [0.478, 0.312]].map(([x, y]) => new THREE.Vector2(x, y));
+  add(new THREE.LatheGeometry(deck, 64), top, 0, 0, 0);
+  // front bumper: rubber band around the front half, with a dark seam above and below
+  add(new THREE.CylinderGeometry(0.566, 0.566, 0.13, 48, 1, true, -Math.PI * 0.55, Math.PI * 1.1), rubber, 0, 0.165, 0);
+  for (const y of [0.098, 0.232]) add(new THREE.TorusGeometry(0.556, 0.006, 4, 64, Math.PI * 1.1), seam, 0, y, 0, Math.PI / 2, 0, Math.PI * 0.45 + Math.PI);
+  // dust-bin door at the back: a darker panel with a grip slot
+  add(new THREE.CylinderGeometry(0.554, 0.554, 0.12, 24, 1, true, Math.PI * 0.72, Math.PI * 0.56), seam, 0, 0.17, 0);
+  add(new THREE.BoxGeometry(0.16, 0.012, 0.03), metal, 0, 0.27, -0.53);
+  // LED ring + centre button (brushed metal cap inside a glowing ring)
+  add(new THREE.TorusGeometry(0.34, 0.016, 8, 72), ledMat, 0, 0.338, 0, Math.PI / 2);
+  add(new THREE.TorusGeometry(0.105, 0.012, 8, 40), ledMat, 0, 0.34, -0.1, Math.PI / 2);
+  add(new THREE.CylinderGeometry(0.09, 0.095, 0.02, 32), metal, 0, 0.34, -0.1);
+  // face: two rounded eye LEDs (scale.z is the blink) and a sensor window under them
   const eyes: THREE.Mesh[] = [];
   for (const sx of [-0.13, 0.13]) {
-    const e = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.02, 12), eyeMat);
-    e.position.set(sx, 0.35, 0.2);
-    body.add(e);
+    const e = add(new THREE.CylinderGeometry(0.052, 0.056, 0.024, 24), eyeMat, sx, 0.346, 0.2);
     eyes.push(e);
   }
-  const brushMat = new THREE.MeshLambertMaterial({ color: 0xc8c0a0 });
+  add(new THREE.CylinderGeometry(0.22, 0.22, 0.06, 32, 1, true, -0.42, 0.84), lens, 0, 0.255, 0, 0, 0, 0).scale.set(2.52, 1, 2.52);
+  // drive wheels peeking out under the shell, plus a front caster
+  for (const sx of [-1, 1]) {
+    add(new THREE.CylinderGeometry(0.075, 0.075, 0.05, 20), tyre, sx * 0.43, 0.075, -0.02, 0, 0, Math.PI / 2);
+    add(new THREE.CylinderGeometry(0.035, 0.035, 0.052, 12), metal, sx * 0.43, 0.075, -0.02, 0, 0, Math.PI / 2);
+  }
+  add(new THREE.SphereGeometry(0.035, 12, 8), metal, 0, 0.035, 0.36);
+
+  // side brushes: a hub with three arms, each ending in a fanned tuft of bristles
+  const brushMat = new THREE.MeshStandardMaterial({ color: 0xd8cfae, roughness: 0.8 });
+  const hubMat = new THREE.MeshStandardMaterial({ color: 0x23252b, roughness: 0.5 });
+  const bristle = new THREE.ConeGeometry(0.012, 0.2, 4);
+  bristle.rotateZ(-Math.PI / 2);
+  bristle.translate(0.1, 0, 0);
   const brushes: THREE.Group[] = [];
   for (const sx of [-0.36, 0.36]) {
     const b = new THREE.Group();
+    add(new THREE.CylinderGeometry(0.05, 0.055, 0.025, 16), hubMat, 0, 0.012, 0, 0, 0, 0, b);
     for (let k = 0; k < 3; k++) {
-      const s = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.015, 0.03), brushMat);
-      s.position.x = 0.15;
-      const holder = new THREE.Group();
-      holder.rotation.y = (k * Math.PI * 2) / 3;
-      holder.add(s);
-      b.add(holder);
+      const arm = new THREE.Group();
+      arm.rotation.y = (k * Math.PI * 2) / 3;
+      add(new THREE.BoxGeometry(0.12, 0.012, 0.022), hubMat, 0.07, 0.006, 0, 0, 0, 0, arm);
+      for (let f = -2; f <= 2; f++) add(bristle, brushMat, 0.11, 0.004, 0, 0, f * 0.09, -0.04, arm);
+      b.add(arm);
     }
-    b.position.set(sx, 0.03, 0.36);
+    b.position.set(sx, 0.02, 0.36);
     group.add(b);
     brushes.push(b);
   }
+
   const shadow = new THREE.Mesh(
     new THREE.PlaneGeometry(1.7, 1.7),
-    new THREE.MeshBasicMaterial({ map: blobTexture('rgba(0,0,0,0.7)', 'rgba(0,0,0,0)'), transparent: true, depthWrite: false }),
+    new THREE.MeshBasicMaterial({ map: blobTexture('rgba(0,0,0,0.75)', 'rgba(0,0,0,0)'), transparent: true, depthWrite: false }),
   );
   shadow.rotation.x = -Math.PI / 2;
   shadow.position.y = 0.012;
   group.add(shadow);
   // Glow lies flat on the floor as a halo: a camera-facing sprite sank half into the floor and got clipped.
   const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
-    map: blobTexture('rgba(120,240,255,0.55)', 'rgba(0,200,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    map: blobTexture('rgba(120,240,255,0.3)', 'rgba(0,200,255,0)'), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
   glow.rotation.x = -Math.PI / 2;
   glow.scale.set(2.4, 2.4, 1);
@@ -702,24 +736,34 @@ function makeRoomba(): RoombaModel {
 export interface DockModel { group: THREE.Group; ring: THREE.Mesh; stripMat: THREE.MeshBasicMaterial; ringMat: THREE.MeshBasicMaterial }
 function makeDock(): DockModel {
   const group = new THREE.Group();
-  const dark = new THREE.MeshPhongMaterial({ color: 0x1b1d22, shininess: 80 });
-  const base = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.05, 1.5), dark);
-  base.position.set(0, 0.025, 0.2);
-  group.add(base);
-  const tower = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 0.4), dark);
-  tower.position.set(0, 0.25, 1.05);
-  group.add(tower);
+  const body = new THREE.MeshPhysicalMaterial({ color: 0x1b1d22, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.1 });
+  const plate = new THREE.MeshStandardMaterial({ color: 0x15161a, roughness: 0.6 });
+  const glass = new THREE.MeshPhysicalMaterial({ color: 0x07080b, roughness: 0.04, metalness: 0.3, clearcoat: 1, clearcoatRoughness: 0.02 });
+  const brass = new THREE.MeshStandardMaterial({ color: 0xd9ad4a, roughness: 0.25, metalness: 1, emissive: 0x2a1800 });
+  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, rx = 0) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.rotation.x = rx;
+    group.add(m);
+    return m;
+  };
+  // base plate with rounded corners and a shallow ramp the robot drives up
+  add(new RoundedBoxGeometry(1.7, 0.06, 1.5, 3, 0.03), plate, 0, 0.03, 0.2);
+  add(new THREE.BoxGeometry(1.5, 0.02, 0.3), plate, 0, 0.012, -0.62, -0.12);
+  // tower: rounded, glossy, with a smoked glass face
+  add(new RoundedBoxGeometry(1.5, 0.56, 0.42, 4, 0.08), body, 0, 0.3, 1.05);
+  add(new RoundedBoxGeometry(1.2, 0.3, 0.02, 2, 0.01), glass, 0, 0.32, 0.835);
+  // status strip behind the glass (the game pulses it) and two small indicator dots
   const stripMat = new THREE.MeshBasicMaterial({ color: 0x35ff9a });
-  const strip = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.07, 0.02), stripMat);
-  strip.position.set(0, 0.36, 0.84);
-  group.add(strip);
+  add(new RoundedBoxGeometry(0.9, 0.05, 0.01, 2, 0.02), stripMat, 0, 0.3, 0.824);
+  for (const sx of [-0.5, 0.5]) add(new THREE.CylinderGeometry(0.018, 0.018, 0.01, 12), stripMat, sx, 0.42, 0.824, Math.PI / 2);
+  // brass charging contacts on raised pads
   for (const sx of [-0.35, 0.35]) {
-    const c = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.02, 0.3), new THREE.MeshPhongMaterial({ color: 0xd4af37, shininess: 100 }));
-    c.position.set(sx, 0.06, 0.55);
-    group.add(c);
+    add(new RoundedBoxGeometry(0.24, 0.03, 0.36, 2, 0.012), plate, sx, 0.07, 0.55);
+    add(new RoundedBoxGeometry(0.16, 0.02, 0.28, 2, 0.008), brass, sx, 0.09, 0.55);
   }
   const ringMat = new THREE.MeshBasicMaterial({ color: 0x35ff9a, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending });
-  const ring = new THREE.Mesh(new THREE.RingGeometry(1.05, 1.22, 40), ringMat);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.05, 1.2, 64), ringMat);
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.03;
   group.add(ring);
@@ -782,9 +826,9 @@ export interface World {
   dock: DockModel;
   cut: CutUniforms;
   introGroup: THREE.Group;
-  floorMat: THREE.MeshPhongMaterial;
+  floorMat: THREE.MeshStandardMaterial;
   /** Ceiling lights. bulbs: emissive materials of the visible bulbs fed by that light; flaky: how unreliable the bulb is. */
-  lights: { light: THREE.PointLight; base: number; bulbs: THREE.MeshLambertMaterial[]; flaky: number }[];
+  lights: { light: THREE.PointLight; base: number; bulbs: THREE.MeshStandardMaterial[]; flaky: number }[];
   /** Fake walls hiding the secret rooms; `group` sinks into the floor once found. */
   secrets: SecretDoor[];
   ambient: THREE.AmbientLight;
@@ -816,42 +860,44 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array, wetTex: THRE
   // an otherwise identical material set that instead fades see-through only where it blocks the roomba.
   const fadeMats = new Set<THREE.Material>();
   const makeMats = (cutaway: boolean) => {
-  const L = (color: number, opts: THREE.MeshLambertMaterialParameters = {}, dark = false) => {
-    const m = new THREE.MeshLambertMaterial({ color, ...opts });
+  // PBR throughout: every surface gets a roughness/metalness that fits what it is
+  const L = (color: number, opts: THREE.MeshStandardMaterialParameters = {}, dark = false) => {
+    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0, ...opts });
     if (cutaway) patchCutaway(m, cut, dark);
     else { patchOccluderFade(m, cut); fadeMats.add(m); }
     return m;
   };
   const M = {
-    wallpaper: L(LEVEL.walls.paper, { side: THREE.DoubleSide }, true),
-    wainscot: L(LEVEL.walls.wainscot, { side: THREE.DoubleSide }, true),
-    cap: L(0x17111a, { side: THREE.DoubleSide }, true),
-    trim: L(0x8a6a3a),
-    woodDark: L(0x3b2416),
-    woodMed: L(0x6b4426),
-    woodLight: L(0x9a6b3e),
-    red: L(0x7a1d27),
-    green: L(0x2f5038),
-    blue: L(0x2a3d66),
-    wicker: L(0xa8875a),
-    gold: L(0xc69a3e, { emissive: 0x2a1a00 }),
-    stone: L(0x9a958a),
-    marbleW: L(0xd8d2c4),
-    white: L(0xdcd8cc),
-    black: L(0x17151a),
-    steel: L(0x8c9096),
-    plant: L(0x2f6b34),
-    plant2: L(0x3f8a3c),
-    pot: L(0xa0522d),
+    wallpaper: L(LEVEL.walls.paper, { side: THREE.DoubleSide, roughness: 0.92 }, true),
+    wainscot: L(LEVEL.walls.wainscot, { side: THREE.DoubleSide, roughness: 0.55 }, true),
+    cap: L(0x17111a, { side: THREE.DoubleSide, roughness: 0.9 }, true),
+    trim: L(0x8a6a3a, { roughness: 0.45, metalness: 0.1 }),
+    woodDark: L(0x3b2416, { roughness: 0.5 }),
+    woodMed: L(0x6b4426, { roughness: 0.55 }),
+    woodLight: L(0x9a6b3e, { roughness: 0.6 }),
+    red: L(0x7a1d27, { roughness: 0.95 }),
+    green: L(0x2f5038, { roughness: 0.95 }),
+    blue: L(0x2a3d66, { roughness: 0.95 }),
+    wicker: L(0xa8875a, { roughness: 0.9 }),
+    gold: L(0xc69a3e, { emissive: 0x2a1a00, roughness: 0.32, metalness: 0.9 }),
+    stone: L(0x9a958a, { roughness: 0.88 }),
+    marbleW: L(0xd8d2c4, { roughness: 0.22 }),
+    white: L(0xdcd8cc, { roughness: 0.45 }),
+    black: L(0x17151a, { roughness: 0.4 }),
+    steel: L(0x8c9096, { roughness: 0.35, metalness: 0.85 }),
+    plant: L(0x2f6b34, { roughness: 0.7 }),
+    plant2: L(0x3f8a3c, { roughness: 0.7 }),
+    pot: L(0xa0522d, { roughness: 0.75 }),
     books: [L(0x7a1d27), L(0x22406a), L(0x2f5a34), L(0xb08a50), L(0x4a2a5a)],
-    flame: L(0xffd080, { emissive: 0xffb040 }),
-    ember: L(0xff6020, { emissive: 0xff4010 }),
-    water: L(0x3a7fa0, { emissive: 0x0a3550 }),
-    window: L(0x24345e, { emissive: 0x1a2a55, side: THREE.DoubleSide }),
-    lamp: L(0xffe0a0, { emissive: 0xffc060 }),
-    globe: L(0x2a6a8a),
+    // emissive parts glow above 1.0 so the bloom picks them up
+    flame: L(0xffd080, { emissive: 0xffb040, emissiveIntensity: 2.4 }),
+    ember: L(0xff6020, { emissive: 0xff4010, emissiveIntensity: 2 }),
+    water: L(0x3a7fa0, { emissive: 0x0a3550, roughness: 0.06, metalness: 0.1 }),
+    window: L(0x24345e, { emissive: 0x1a2a55, emissiveIntensity: 1.6, side: THREE.DoubleSide, roughness: 0.08, metalness: 0.2 }),
+    lamp: L(0xffe0a0, { emissive: 0xffc060, emissiveIntensity: 2.2 }),
+    globe: L(0x2a6a8a, { roughness: 0.4 }),
   };
-  const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1), side: THREE.DoubleSide }));
+  const portraits = [0, 1, 2, 3, 4, 5].map((i) => L(0xffffff, { map: portraitTexture(i + 1), side: THREE.DoubleSide, roughness: 0.55 }));
   return { M, portraits };
   };
   let { M, portraits } = makeMats(true);
@@ -862,7 +908,7 @@ export function buildWorld(dirtTex: THREE.Texture, grid: Int8Array, wetTex: THRE
   const closedGrid = grid.slice();
   for (const [c, r] of SECRET_DOORS) closedGrid[r * COLS + c] = -1;
   const floorTex = floorTexture(closedGrid, grid);
-  const floorMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60, specular: 0x3a3a3a });
+  const floorMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.42, metalness: 0 });
   floorMat.onBeforeCompile = (shader) => {
     shader.uniforms.uFloor = { value: floorTex };
     shader.uniforms.uDirt = { value: dirtTex };
@@ -900,14 +946,15 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
         float wetA = smoothstep(0.08 + 0.3 * dn(vDW * 1.7), 0.55, ww) * (1.0 - dirtA);
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.55, 0.58, 0.66), wetA);`,
       )
-      .replace('#include <specularmap_fragment>', `#include <specularmap_fragment>
-        specularStrength *= (1.0 - dirtA);
-        specularStrength = mix(specularStrength, 3.6, wetA);`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        // polish varies a little across the floor; mud is fully matte, wet tile turns to a mirror
+        roughnessFactor *= 0.85 + 0.3 * n1;
+        roughnessFactor = mix(roughnessFactor, 1.0, dirtA);
+        roughnessFactor = mix(roughnessFactor, 0.05, wetA);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         // faint cool sheen with mop streaks, so wet tile reads even away from the lights
         totalEmissiveRadiance += vec3(0.05, 0.075, 0.11) * wetA * (0.55 + 0.45 * dn(vec2(vDW.x * 0.6, vDW.y * 7.0)));`)
-      .replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
-        material.specularShininess = mix(material.specularShininess, 140.0, wetA);`);
+;
   };
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W, WORLD_H), floorMat);
   floor.rotation.x = -Math.PI / 2;
@@ -980,10 +1027,10 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
     m.position.set(x, y, z);
     return m;
   };
-  const globeMat = new THREE.MeshLambertMaterial({ map: globeTexture() });
+  const globeMat = new THREE.MeshStandardMaterial({ map: globeTexture(), roughness: 0.35 });
   patchOccluderFade(globeMat, cut);
   const flameMats = [0xff7a1a, 0xffc040].map((color) => new THREE.MeshBasicMaterial({
-    color, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending,
+    color: new THREE.Color(color).multiplyScalar(2.6), transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
   const rippleMat = () => new THREE.MeshBasicMaterial({ color: 0xcfefff, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide });
   ({ M, portraits } = makeMats(false));
@@ -1325,14 +1372,14 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
             flames.push({ m, k, base: inner ? 0.45 : 0.65 });
           }
           soundSources.push({ kind: 'fire', x: f.x, z: f.z });
-          const ember = M.ember as THREE.MeshLambertMaterial;
+          const ember = M.ember as THREE.MeshStandardMaterial;
           animators.push((t) => {
             for (const fl of flames) {
               const n1 = Math.sin(t * 9 + fl.k * 1.7) * 0.5 + Math.sin(t * 15.3 + fl.k * 4.1) * 0.3;
               fl.m.scale.set(1 + n1 * 0.15, fl.base * (1 + n1 * 0.35), 1 + n1 * 0.15);
               fl.m.rotation.z = Math.sin(t * 5 + fl.k) * 0.08;
             }
-            ember.emissiveIntensity = 0.75 + 0.25 * Math.sin(t * 6.3) * Math.sin(t * 2.9);
+            ember.emissiveIntensity = 2 * (0.75 + 0.25 * Math.sin(t * 6.3) * Math.sin(t * 2.9));
           });
         }
         break;
@@ -1617,7 +1664,7 @@ float dn(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   const moon = new THREE.DirectionalLight(0xb0c0ff, 0.9);
   moon.position.set(-30, 60, -20);
   scene.add(moon);
-  const pl = (x: number, y: number, z: number, int: number, dist: number, bulbs: THREE.MeshLambertMaterial[], flaky = 1, color = 0xffb870) => {
+  const pl = (x: number, y: number, z: number, int: number, dist: number, bulbs: THREE.MeshStandardMaterial[], flaky = 1, color = 0xffb870) => {
     const l = new THREE.PointLight(color, int, dist, 1.6);
     l.position.set(x, y, z);
     scene.add(l);
@@ -1736,6 +1783,48 @@ export function enableShadows(world: World, renderer: THREE.WebGLRenderer) {
     sun.target.position.set(WORLD_W / 2, 0, WORLD_H / 2);
     world.scene.add(sun.target);
   }
+}
+
+/**
+ * Image-based lighting for the PBR materials. Not a bright studio: a dim, warm-and-cool room that
+ * matches the manor at night (chandelier glow overhead, moonlit window panes on two sides), so
+ * polished wood, brass and marble pick up believable highlights without lifting the darkness.
+ */
+const envCache = new WeakMap<THREE.WebGLRenderer, THREE.Texture>();
+export function applyEnvironment(world: World, renderer: THREE.WebGLRenderer) {
+  let tex = envCache.get(renderer);
+  if (!tex) {
+    const env = new THREE.Scene();
+    const box = new THREE.Mesh(new THREE.BoxGeometry(24, 10, 24), new THREE.MeshBasicMaterial({ color: 0x120c14, side: THREE.BackSide }));
+    box.position.y = 3;
+    env.add(box);
+    // a dark floor so downward reflections stay low
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(24, 24), new THREE.MeshBasicMaterial({ color: 0x07050a }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -1.9;
+    env.add(floor);
+    const glow = (color: number, k: number, w: number, h: number, x: number, y: number, z: number, rx: number, ry: number) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(k), side: THREE.DoubleSide }));
+      m.position.set(x, y, z);
+      m.rotation.set(rx, ry, 0);
+      env.add(m);
+    };
+    // chandeliers overhead
+    glow(0xffb36b, 6, 3, 3, -4, 7.9, -3, Math.PI / 2, 0);
+    glow(0xffc888, 4, 2, 2, 5, 7.9, 4, Math.PI / 2, 0);
+    // moonlit windows
+    glow(0x6f88d8, 2.2, 3, 4.5, 0, 3.5, -11.9, 0, 0);
+    glow(0x5a74c4, 1.6, 2.5, 4, 11.9, 3.2, 2, 0, -Math.PI / 2);
+    // a soft warm bounce near the floor (fireplace)
+    glow(0xff7a3a, 1.2, 4, 1.4, -11.9, 0.2, -2, 0, Math.PI / 2);
+    const pm = new THREE.PMREMGenerator(renderer);
+    tex = pm.fromScene(env, 0.035).texture;
+    pm.dispose();
+    env.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) { m.geometry.dispose(); (m.material as THREE.Material).dispose(); } });
+    envCache.set(renderer, tex);
+  }
+  world.scene.environment = tex;
+  world.scene.environmentIntensity = 0.85;
 }
 
 /** Whether a material is solid enough to cast a shadow (not an additive or depthless effect). */

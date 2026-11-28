@@ -4,7 +4,7 @@ import {
 } from './constants';
 import { DirtMap, UNIT, makeRng } from './dirt';
 import { LEVELS, LevelDef } from './levels';
-import { setMachineLook, buildGrid, buildWorld, enableShadows, ShadowCache, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
+import { setMachineLook, buildGrid, buildWorld, enableShadows, applyEnvironment, ShadowCache, ghostTexture, MessItem, MessPart, PART_ANIM, World } from './world';
 import { Sfx } from './audio';
 import { CollisionWorld, Engine, FollowCamera, Input, Mover, Particles, Popups, Squash, lerpAngle, poseBody } from '../../engine/src';
 import { AUTO_ID, RunSnapshot, SAVE_VERSION, SaveMeta, decodeBytes, deleteSave, encodeBytes, writeSave } from './saves';
@@ -82,6 +82,8 @@ export interface GameOverInfo {
   reviveCost: number;
 }
 
+/** HDR multiplier for LEDs and bulbs, so they rise above the bloom threshold. */
+const GLOW = 1.9;
 const AMBIENT_NIGHT = new THREE.Color(0xb8b0d8);
 const AMBIENT_DAWN = new THREE.Color(0xffc88a);
 
@@ -256,6 +258,15 @@ export class Game {
       onBlur: this.onBlur,
       fov: 50, near: 0.1, far: 220,
       shadows: true,
+      exposure: 1.3,
+      postfx: {
+        bloom: { strength: 0.4, radius: 0.5, threshold: 0.95 },
+        vignette: 0.38,
+        grain: 0.03,
+        aberration: 1,
+        shadowTint: [0.0, 0.006, 0.022],
+        highlightTint: [0.022, 0.01, -0.006],
+      },
     });
     this.isTouch = this.engine.isTouch;
     this.renderer = this.engine.renderer;
@@ -274,7 +285,7 @@ export class Game {
     // coins
     const coinGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.07, 18);
     coinGeo.rotateX(Math.PI / 2);
-    this.coinMesh = new THREE.InstancedMesh(coinGeo, new THREE.MeshPhongMaterial({ color: 0xffc43a, emissive: 0x6a4000, shininess: 120, specular: 0xffffff }), 48);
+    this.coinMesh = new THREE.InstancedMesh(coinGeo, new THREE.MeshStandardMaterial({ color: 0xffd45e, emissive: 0xc07a10, emissiveIntensity: 1.1, roughness: 0.3, metalness: 0.75 }), 48);
     this.coinMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.coinMesh.frustumCulled = false;
     for (let i = 0; i < 48; i++) this.coinsList.push({ x: 0, z: 0, active: false, phase: Math.random() * 6 });
@@ -332,6 +343,7 @@ export class Game {
     this.dirt.dustMul = 1 + 0.15 * n;
     this.world = buildWorld(this.dirt.tex, this.grid, this.dirt.wetTex);
     enableShadows(this.world, this.renderer);
+    applyEnvironment(this.world, this.renderer);
     this.shadowCache = new ShadowCache(this.world);
     setMachineLook(this.world.roomba, this.machine);
     this.engine.scene = this.world.scene;
@@ -853,8 +865,8 @@ export class Game {
     const r = this.world.roomba;
     r.light.intensity = 12 * p;
     r.glow.material.opacity = p;
-    r.ledMat.color.setRGB(0, 0.9 * p, p);
-    r.eyeMat.color.setRGB(0.75 * p, 0.99 * p, p);
+    r.ledMat.color.setRGB(0, 0.9 * p, p).multiplyScalar(GLOW);
+    r.eyeMat.color.setRGB(0.75 * p, 0.99 * p, p).multiplyScalar(GLOW);
     r.eyes.forEach((e) => (e.scale.z = 0.2 + 0.8 * p));
   }
 
@@ -1352,7 +1364,7 @@ export class Game {
         }
       }
       l.light.intensity = l.base * k;
-      for (const m of l.bulbs) m.emissiveIntensity = 0.15 + 0.95 * k;
+      for (const m of l.bulbs) m.emissiveIntensity = (0.15 + 0.95 * k) * GLOW;
     });
   }
 
@@ -1974,8 +1986,8 @@ export class Game {
     const t = performance.now() / 1000;
     if (r.machine >= 4) r.body.position.y = 0.2 + Math.sin(t * 3) * 0.04; // the hover cleaner floats
     if (r.beacon) {
-      if (r.machine === 3) r.beacon.color.setRGB(1, 0.6, 0.1).multiplyScalar(Math.sin(t * 9) > 0 ? 1 : 0.25);
-      else r.beacon.color.setRGB(0.45, 0.94, 1).multiplyScalar(0.7 + 0.3 * Math.sin(t * 6));
+      if (r.machine === 3) r.beacon.color.setRGB(1, 0.6, 0.1).multiplyScalar((Math.sin(t * 9) > 0 ? 1 : 0.25) * GLOW);
+      else r.beacon.color.setRGB(0.45, 0.94, 1).multiplyScalar((0.7 + 0.3 * Math.sin(t * 6)) * GLOW);
     }
     const spinning = playing && !this.docked && !this.ending;
     r.brushes[0].rotation.y += dt * (spinning ? 28 : 3);
@@ -1988,9 +2000,9 @@ export class Game {
       else if (br < 0.12) { const on = Math.sin(t * 14) > 0 ? 1 : 0.15; cr = on; cg = 0.1 * on; cb = 0.1 * on; }
       else if (br < 0.3) { cr = 1; cg = 0.55; cb = 0.1; }
       else if (this.mult > 1) { const p = 0.75 + 0.25 * Math.sin(t * (6 + this.mult * 2)); cr = 0.2 * this.mult * p * 0.4; cg = 0.95 * p; cb = p; }
-      r.ledMat.color.setRGB(cr, cg, cb);
+      r.ledMat.color.setRGB(cr, cg, cb).multiplyScalar(GLOW);
       const full = this.bin >= this.binCap - 0.01;
-      if (full) r.eyeMat.color.setRGB(1, 0.6, 0.2); else r.eyeMat.color.setRGB(0.75, 0.99, 1);
+      if (full) r.eyeMat.color.setRGB(1, 0.6, 0.2).multiplyScalar(GLOW); else r.eyeMat.color.setRGB(0.75, 0.99, 1).multiplyScalar(GLOW);
       this.blinkT -= dt;
       const blink = this.blinkT < 0.12;
       if (this.blinkT < 0) this.blinkT = 2 + Math.random() * 3;
@@ -2005,7 +2017,7 @@ export class Game {
     d.ringMat.opacity = this.homeHint ? 0.5 + 0.5 * pulse : 0.25 + 0.3 * pulse;
     const rs = 1 + (this.homeHint ? pulse * 0.25 : pulse * 0.08);
     d.ring.scale.set(rs, rs, rs);
-    d.stripMat.color.setRGB(0.2 * (0.5 + pulse * 0.5), 1 * (0.5 + pulse * 0.5), 0.6 * (0.5 + pulse * 0.5));
+    d.stripMat.color.setRGB(0.2, 1, 0.6).multiplyScalar((0.5 + pulse * 0.5) * GLOW);
     this.world.cut.uRoomba.value.set(this.px, 0, this.pz);
   }
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Particles } from './particles';
+import { PostFx, PostFxOptions } from './postfx';
 
 export interface EngineOptions {
   /** Called every frame with a clamped delta (seconds) and the rAF timestamp in seconds. */
@@ -16,6 +17,10 @@ export interface EngineOptions {
   background?: THREE.ColorRepresentation;
   /** Enable shadow map rendering (PCFSoft). Default false. */
   shadows?: boolean;
+  /** Filmic tone mapping exposure (ACES). Default 1. */
+  exposure?: number;
+  /** Post-processing (bloom, grade). Dropped automatically when frames get slow. */
+  postfx?: PostFxOptions;
 }
 
 /**
@@ -33,6 +38,8 @@ export class Engine {
   /** Set false to freeze the update callback (rendering continues). */
   running = true;
   private particles: Particles[] = [];
+  /** Active post-processing chain, or null for a plain tone-mapped render. */
+  post: PostFx | null = null;
   private raf = 0;
   private last = 0;
   private slowFrames = 0;
@@ -46,6 +53,8 @@ export class Engine {
     this.pixelRatio = Math.min(window.devicePixelRatio, this.isTouch ? 1.5 : 2);
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = opts.exposure ?? 1;
     if (opts.shadows) {
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap was removed in three r18x
@@ -60,6 +69,14 @@ export class Engine {
     if (opts.background !== undefined) this.scene.background = new THREE.Color(opts.background);
 
     this.camera = new THREE.PerspectiveCamera(opts.fov ?? 50, 1, opts.near ?? 0.1, opts.far ?? 220);
+    if (opts.postfx) {
+      try {
+        this.post = new PostFx(this.renderer, this.scene, this.camera, { ...opts.postfx, samples: this.isTouch ? 0 : opts.postfx.samples ?? 4 });
+      } catch (e) {
+        console.warn('Post-processing unavailable, rendering without it', e);
+        this.post = null;
+      }
+    }
 
     this.onResize();
     window.addEventListener('resize', this.onResize);
@@ -109,6 +126,8 @@ export class Engine {
     window.removeEventListener('blur', this.onBlur);
     document.removeEventListener('visibilitychange', this.onVis);
     if (this.onCtx) this.renderer.domElement.removeEventListener('contextmenu', this.onCtx, true);
+    this.post?.dispose();
+    this.post = null;
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -121,13 +140,21 @@ export class Engine {
     dt = Math.min(this.opts.maxDt ?? 0.05, Math.max(0.001, dt));
     this.adapt(dt);
     if (this.running) this.opts.update(dt, now / 1000);
-    this.renderer.render(this.scene, this.camera);
+    if (this.post) this.post.render(this.scene, this.camera, now / 1000);
+    else this.renderer.render(this.scene, this.camera);
   };
 
   private adapt(dt: number) {
     if (!this.running || !(this.opts.adaptive?.() ?? true)) { this.slowFrames = 0; return; }
     if (dt > 1 / 42) this.slowFrames++;
     else this.slowFrames = Math.max(0, this.slowFrames - 0.5);
+    // first give up post-processing, then resolution
+    if (this.slowFrames > 90 && this.post) {
+      this.post.dispose();
+      this.post = null;
+      this.slowFrames = 0;
+      return;
+    }
     if (this.slowFrames > 90 && this.pixelRatio > 0.8) {
       this.pixelRatio = Math.max(0.75, this.pixelRatio - 0.25);
       this.renderer.setPixelRatio(this.pixelRatio);
@@ -140,6 +167,7 @@ export class Engine {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h, false); // CSS keeps the canvas at 100%; only the buffer changes
+    this.post?.setSize(w, h, this.pixelRatio);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.syncProjection();
