@@ -95,7 +95,8 @@ export function reviveCost(coins: number) {
 export interface GameCallbacks {
   onPhase: (p: Phase) => void;
   onHud: (h: HudState) => void;
-  onToast: (text: string, kind: ToastKind) => void;
+  /** `detail` is a second line: used by 'big' banners for the reward or the name. */
+  onToast: (text: string, kind: ToastKind, detail?: string) => void;
   onCaption: (text: string | null, big?: boolean) => void;
   onGameOver: (info: GameOverInfo) => void;
   onMute: (m: boolean) => void;
@@ -470,7 +471,7 @@ export class Game {
       const a = (i / 60) * Math.PI * 2;
       this.glow.spawn(this.px, 0.4, this.pz, Math.cos(a) * 6, 2 + Math.random() * 3, Math.sin(a) * 6, 0.5, 1, 0.9, 0.4, 1, 4);
     }
-    this.cb.onToast(`${next.icon} NEW MACHINE: ${next.name.toUpperCase()}!`, 'big');
+    this.cb.onToast('New machine', 'big', next.name);
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1);
     this.pushHud();
     return true;
@@ -525,7 +526,7 @@ export class Game {
       this.isPlaytest = true; // suppress autosaves so the real game's saves are untouched
     } catch (e) {
       console.error('playCustomLevel failed', e);
-      this.cb.onToast('That level could not be built — back to the editor.', 'bad');
+      this.cb.onToast('That level could not be built. Back to the editor.', 'bad');
       this.toMenu();
     }
   }
@@ -788,7 +789,7 @@ export class Game {
     this.engine.resetClock();
     this.pushHud();
     this.drawMinimap();
-    this.cb.onToast('💾 Shift resumed — welcome back!', 'good');
+    this.cb.onToast('Shift resumed. Welcome back.', 'good');
   }
 
   // ------------------------------------------------------------ internals
@@ -815,10 +816,10 @@ export class Game {
     this.cb.onCaption(null);
     setTimeout(() => {
       if (this.phase !== 'playing' && this.phase !== 'paused') return;
-      this.cb.onToast(this.isTouch ? 'Drag anywhere to drive · Hold ⚡ for turbo' : 'WASD / Arrows to drive · Shift = Turbo', 'info');
+      this.cb.onToast(this.isTouch ? 'Drag anywhere to drive · Hold Turbo to boost' : 'WASD or arrows to drive · Shift for turbo', 'info');
     }, fromIntro ? 300 : 100);
     setTimeout(() => {
-      if (this.phase === 'playing') this.cb.onToast('Clean rooms to 100% for coins — every dawn pays a bonus!', 'good');
+      if (this.phase === 'playing') this.cb.onToast('Clean rooms to 100% for coins. Every dawn pays a bonus.', 'good');
     }, 3200);
   }
 
@@ -948,7 +949,7 @@ export class Game {
     this.sfx.noise(1.4, 140, 0.35);
     this.sfx.noise(0.5, 900, 0.12, 0.05, 'bandpass');
     [392, 523, 659, 784, 1047].forEach((f, i) => this.sfx.tone(f, 0.45, 'triangle', 0.13, 0, 0.5 + i * 0.1));
-    this.cb.onToast(`🗝️ SECRET ROOM FOUND: ${ROOMS[sd.room].name.toUpperCase()}! +${coins}🪙 +${bonus}`, 'big');
+    this.cb.onToast('Secret room found', 'big', `${ROOMS[sd.room].name} · +${coins} coins · +${bonus.toLocaleString()}`);
     this.popup('🗝️ SECRET!', '#ffd84d', 1.8, 1.5);
     for (let n = 0; n < 50; n++) {
       this.dust.spawn(sd.fx + sd.nx * 0.2, Math.random() * 3, sd.fz + (Math.random() - 0.5) * 2,
@@ -1448,7 +1449,7 @@ export class Game {
       if (hour === 0) this.dawnBreaks();
       else {
         const left = 5 - hour;
-        this.cb.onToast(`🕐 ${hour}:00 AM — ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
+        this.cb.onToast(`${hour}:00 AM · ${left} hour${left === 1 ? '' : 's'} until dawn`, 'info');
         this.chimeClocks(hour);
       }
     }
@@ -1498,7 +1499,7 @@ export class Game {
         }
         if (!charging && !emptying && !this.fullHinted) {
           this.fullHinted = true;
-          this.cb.onToast(this.isTouch ? 'Fully charged! Tap SHOP for upgrades' : 'Fully charged! Press E for upgrades', 'good');
+          this.cb.onToast(this.isTouch ? 'Fully charged · Tap Shop for upgrades' : 'Fully charged · Press E for upgrades', 'good');
         }
         if (this.battery > bmax * 0.5) { this.warned30 = false; this.warned12 = false; }
         if (this.bin < this.binCap * 0.5) this.binWarned = false;
@@ -1537,7 +1538,7 @@ export class Game {
         this.binWarned = true;
         this.sfx.full();
         this.addTrauma(0.2);
-        this.cb.onToast('🗑️ DUST BIN FULL! Return to the dock to empty', 'warn');
+        this.cb.onToast('Dust bin full. Return to the dock to empty it.', 'warn');
         this.popup('BIN FULL!', '#ffb347', 1.2);
       }
       this.sfx.hum(0.55 + frac * 0.45, frac * (this.turbo ? 1.4 : 1) + Math.min(1, removedUnits * 40));
@@ -1562,7 +1563,7 @@ export class Game {
         this.popup('DOCKED ⚡', '#5dffb0', 1.1);
         if (!this.dockHinted) {
           this.dockHinted = true;
-          this.cb.onToast(this.isTouch ? 'Charging & emptying… Tap SHOP for upgrades' : 'Charging & emptying… Press E for upgrades', 'good');
+          this.cb.onToast(this.isTouch ? 'Charging and emptying · Tap Shop for upgrades' : 'Charging and emptying · Press E for upgrades', 'good');
         }
       }
 
@@ -1571,10 +1572,10 @@ export class Game {
       if (br < 0.3 && !this.warned30) {
         this.warned30 = true;
         this.sfx.low();
-        this.cb.onToast('🔋 Battery low — follow the arrow home!', 'warn');
+        this.cb.onToast('Battery low. Follow the arrow home.', 'warn');
       }
       if (br < 0.12) {
-        if (!this.warned12) { this.warned12 = true; this.cb.onToast('⚠️ CRITICAL BATTERY!', 'bad'); }
+        if (!this.warned12) { this.warned12 = true; this.cb.onToast('Critical battery', 'bad'); }
         this.critBeep -= dt;
         if (this.critBeep <= 0) { this.critBeep = 1.6; this.sfx.low(); }
       }
@@ -1663,7 +1664,7 @@ export class Game {
     this.score += pts;
     this.sfx.clear();
     this.addTrauma(0.35);
-    this.cb.onToast(`✨ ${ROOMS[i].name.toUpperCase()} SPOTLESS! +${coins}🪙 +${pts}`, 'big');
+    this.cb.onToast('Room spotless', 'big', `${ROOMS[i].name} · +${coins} coins · +${pts.toLocaleString()}`);
     this.popup(`+${coins} 🪙`, '#ffd84d', 1.6, 1.5);
     for (let k = 0; k < 110; k++) {
       const x = (c0 + Math.random() * w) * TILE, z = (r0 + Math.random() * h) * TILE;
@@ -1679,7 +1680,7 @@ export class Game {
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 1.5);
     if (!ROOMS[i].secret && ROOMS.every((r, k) => r.secret || this.cleared[k]) && !this.levelDone) {
       this.levelDone = true;
-      setTimeout(() => this.cb.onToast(`🚚 ${this.nextLevelName} is calling — move on whenever you're ready!`, 'good'), 3200);
+      setTimeout(() => this.cb.onToast(`${this.nextLevelName} is calling. Move on whenever you're ready.`, 'good'), 3200);
     }
     // whole-manor bonus: once per night, so re-cleaning after a ghost visit doesn't pay it again
     if (!ROOMS[i].secret && this.manorBonusNight !== this.night && ROOMS.every((r, k) => r.secret || this.cleared[k])) {
@@ -1687,7 +1688,7 @@ export class Game {
       this.score += 5000;
       this.coins += 100;
       this.coinsEarned += 100;
-      setTimeout(() => this.cb.onToast(`🏆 ${LEVEL.name.toUpperCase()} IS SPOTLESS! +5000`, 'big'), 1200);
+      setTimeout(() => this.cb.onToast('Building complete', 'big', `${LEVEL.name} · +5,000`), 1200);
     }
   }
 
@@ -1775,7 +1776,7 @@ export class Game {
         this.dirt.total[room] = Math.max(1, this.dirt.total[room]);
       }
       this.sfx.ghost();
-      this.cb.onToast(`🌑 The sun sinks again… NIGHT ${n + 1} begins${count ? ` — mud is back in ${count} room${count === 1 ? '' : 's'}` : ''}!`, 'bad');
+      this.cb.onToast(`Night ${n + 1} begins${count ? `. Mud is back in ${count} room${count === 1 ? '' : 's'}` : ''}`, 'bad');
     }, 3200);
     this.autosaveT = Math.max(this.autosaveT, AUTOSAVE_EVERY - 2);
   }
@@ -1801,7 +1802,7 @@ export class Game {
     this.engine.resetClock();
     this.autosaveT = AUTOSAVE_EVERY - 1;
     this.pushHud();
-    this.cb.onToast(`🔋 Recharged for ${cost}🪙 — back to work!`, 'good');
+    this.cb.onToast(`Recharged for ${cost} coins. Back to work.`, 'good');
     return true;
   }
 
@@ -1824,7 +1825,7 @@ export class Game {
       this.ghostSprite.scale.set(2.6, 2.6, 1);
       this.ghostSprite.material.rotation = 0;
       this.sfx.ghost();
-      this.cb.onToast(`👻 Ghostly muddy footprints in the ${ROOMS[room].name}!`, 'bad');
+      this.cb.onToast(`Ghostly footprints in the ${ROOMS[room].name}`, 'bad');
     }
     const g = this.ghost;
     if (!g) return;
@@ -1908,7 +1909,7 @@ export class Game {
     this.score += pts;
     this.addTrauma(0.3);
     this.sfx.ghostCatch();
-    this.cb.onToast(`👻 GHOST CAUGHT! +${coins}🪙 +${pts}`, 'big');
+    this.cb.onToast('Ghost caught', 'big', `+${coins} coins · +${pts.toLocaleString()}`);
     this.popup(`+${coins} 🪙`, '#a0e0ff', 1.6, 1.5);
     // burst of particles from the ghost's position
     for (let k = 0; k < 40; k++) {

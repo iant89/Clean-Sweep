@@ -83,7 +83,9 @@ export default function HUD({
 
   const night = (hud.time % NIGHT_LENGTH) / NIGHT_LENGTH;
   const charging = hud.battery < hud.batteryMax - 0.5 || hud.bin > 0.5;
-  const big = !isTouch;
+  // compact layout for touch and for narrow (portrait phone) screens
+  const narrow = typeof window !== 'undefined' && window.innerWidth < 640;
+  const big = !isTouch && !narrow;
 
   return (
     <div className="hud absolute inset-0 pointer-events-none select-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
@@ -92,12 +94,18 @@ export default function HUD({
 
       {/* ------------------------------------------------ top-left: machine status */}
       <div className="absolute left-3 top-3 sm:left-6 sm:top-5 flex flex-col gap-3">
-        <div className="hud-scrim flex items-center gap-3 pr-4">
+        <div className={`hud-scrim flex items-center ${narrow ? 'gap-2 pr-2.5' : 'gap-3 pr-4'}`}>
           <Ring value={br} size={big ? 64 : 50} stroke={big ? 5 : 4} color={battColor} pulse={br < 0.3}>
             <span className="font-display font-bold text-[var(--cs-ink-hi)] tabular-nums leading-none" style={{ fontSize: big ? 17 : 13 }}>{Math.round(br * 100)}</span>
             <span className="text-[7px] sm:text-[8px] tracking-[0.2em] text-[var(--cs-dim)] mt-0.5">BATT</span>
           </Ring>
-          <div className="flex flex-col gap-1.5 min-w-[92px] sm:min-w-[130px]">
+          {narrow ? (
+            <Ring value={bf} size={36} stroke={3} color={binColor} pulse={binFull}>
+              <span className="font-display font-bold text-[var(--cs-ink-hi)] tabular-nums leading-none text-[10px]">{Math.round(bf * 100)}</span>
+              <span className="text-[6px] tracking-[0.16em] text-[var(--cs-dim)]">BIN</span>
+            </Ring>
+          ) : (
+          <div className="flex flex-col gap-1.5 min-w-[130px]">
             <div className="flex items-baseline justify-between gap-3">
               <span className={`hud-label ${binFull ? '!text-[#ffbf7a] blink-soft' : ''}`}>{binFull ? 'Bin full' : 'Dust bin'}</span>
               <span className="text-[11px] font-semibold tabular-nums text-[var(--cs-ink-hi)]">{Math.round(bf * 100)}%</span>
@@ -105,10 +113,11 @@ export default function HUD({
             <div className="hud-bar"><div style={{ width: `${bf * 100}%`, background: binColor, boxShadow: `0 0 8px ${binColor}` }} /></div>
             {hud.turbo && <span className="hud-label !text-[var(--cs-cyan)]">Turbo</span>}
           </div>
+          )}
         </div>
 
         {/* room */}
-        <div className={`hud-scrim min-w-[150px] sm:min-w-[214px] ${hud.roomCleared ? 'hud-scrim-done' : ''}`}>
+        <div className={`hud-scrim min-w-[118px] sm:min-w-[214px] ${hud.roomCleared ? 'hud-scrim-done' : ''}`}>
           <div className="flex items-baseline justify-between gap-3">
             <span className="font-display text-[11px] sm:text-[13px] font-semibold tracking-[0.14em] text-[var(--cs-ink-hi)] truncate uppercase">{hud.roomName}</span>
             <span className={`font-display font-bold text-sm tabular-nums ${hud.roomCleared ? 'text-[var(--cs-green)]' : 'text-[var(--cs-gold-hi)]'}`}>
@@ -122,14 +131,14 @@ export default function HUD({
       </div>
 
       {/* ------------------------------------------------ top-center: clock + score */}
-      <div className="hud-center absolute left-1/2 -translate-x-1/2 top-1 sm:top-2 flex flex-col items-center px-10 sm:px-16 pt-2 sm:pt-3 pb-3 sm:pb-4">
-        <div className="flex items-center gap-2.5 text-[9px] sm:text-[10px] tracking-[0.34em] text-[var(--cs-dim)]">
-          <span className="text-[var(--cs-ink)]">NIGHT {nightNumber(hud.time)}</span>
-          <span className="w-1 h-1 rotate-45 bg-[var(--cs-gold)]" />
-          <span className="font-display text-[var(--cs-ink-hi)] tracking-[0.18em] text-[11px] sm:text-[13px]">{formatClock(hud.time)}</span>
+      <div className="hud-center absolute left-1/2 -translate-x-1/2 top-1 sm:top-2 flex flex-col items-center px-3 sm:px-16 pt-2 sm:pt-3 pb-3 sm:pb-4">
+        <div className="flex flex-col sm:flex-row items-center gap-0.5 sm:gap-2.5 text-[9px] sm:text-[10px] tracking-[0.34em] text-[var(--cs-dim)]">
+          <span className="text-[var(--cs-ink)] whitespace-nowrap">NIGHT {nightNumber(hud.time)}</span>
+          <span className="hidden sm:block w-1 h-1 rotate-45 bg-[var(--cs-gold)]" />
+          <span className="font-display text-[var(--cs-ink-hi)] tracking-[0.18em] text-[11px] sm:text-[13px] whitespace-nowrap">{formatClock(hud.time)}</span>
         </div>
         {/* midnight → dawn track */}
-        <div className="relative w-[120px] sm:w-[200px] h-[3px] mt-2 bg-white/10 rounded-full">
+        <div className="relative w-[72px] sm:w-[200px] h-[3px] mt-2 bg-white/10 rounded-full">
           <div className="absolute inset-y-0 left-0 rounded-full" style={{ width: `${night * 100}%`, background: 'linear-gradient(90deg,#5458b8,#c66a3a,#ffd27a)' }} />
           <div className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2 h-2 rounded-full bg-[#fff3c4]" style={{ left: `${night * 100}%`, boxShadow: '0 0 8px #ffd27a' }} />
           <span className="absolute -left-4 top-1/2 -translate-y-1/2 text-[9px] text-[var(--cs-dim)]">☾</span>
@@ -156,18 +165,18 @@ export default function HUD({
             <CoinGlyph />
             <span className="font-display font-bold tabular-nums text-[var(--cs-gold-hi)] text-base sm:text-lg leading-none">{hud.coins.toLocaleString()}</span>
           </div>
-          <button onClick={onMute} className="pointer-events-auto cs-icon-btn !bg-black/40" aria-label="Toggle sound"><Icon name={muted ? 'soundOff' : 'soundOn'} /></button>
+          <button onClick={onMute} className="pointer-events-auto cs-icon-btn !bg-black/40 max-sm:!hidden" aria-label="Toggle sound"><Icon name={muted ? 'soundOff' : 'soundOn'} /></button>
           <button onClick={onPause} className="pointer-events-auto cs-icon-btn !bg-black/40" aria-label="Pause">
             <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
           </button>
         </div>
         <div className="hud-map">
           <span className="cs-corner tl" /><span className="cs-corner tr" /><span className="cs-corner bl" /><span className="cs-corner br" />
-          <canvas ref={minimapRef} className="block w-[124px] sm:w-[190px] h-auto" style={{ imageRendering: 'pixelated', aspectRatio: '44 / 34' }} />
+          <canvas ref={minimapRef} className="block w-[92px] sm:w-[190px] h-auto" style={{ imageRendering: 'pixelated', aspectRatio: '44 / 34' }} />
         </div>
         <div className="text-right -mt-1">
-          <div className="font-display text-[10px] sm:text-[11px] tracking-[0.16em] text-[var(--cs-ink-hi)] truncate max-w-[190px]">{hud.levelNum}. {hud.levelName.toUpperCase()}</div>
-          <div className="flex justify-end gap-3 mt-1 text-[9px] sm:text-[10px] tracking-[0.18em] text-[var(--cs-dim)] tabular-nums">
+          <div className="font-display text-[10px] sm:text-[11px] tracking-[0.16em] text-[var(--cs-ink-hi)] truncate max-w-[100px] sm:max-w-[190px]">{hud.levelNum}. {hud.levelName.toUpperCase()}</div>
+          <div className="flex flex-col sm:flex-row items-end sm:justify-end gap-0.5 sm:gap-3 mt-1 text-[9px] sm:text-[10px] tracking-[0.18em] text-[var(--cs-dim)] tabular-nums">
             <span>ROOMS <b className="text-[var(--cs-ink-hi)] font-semibold">{hud.roomsCleared}/{hud.roomsTotal}</b></span>
             <span>CLEAN <b className="text-[var(--cs-ink-hi)] font-semibold">{Math.round(hud.overall * 100)}%</b></span>
             {hud.secretsFound > 0 && <span>SECRETS <b className="text-[#c8a6ff] font-semibold">{hud.secretsFound}/{hud.secretsTotal}</b></span>}
@@ -194,7 +203,7 @@ export default function HUD({
               <span className={`w-1.5 h-1.5 rounded-full ${charging ? 'bg-[var(--cs-gold)] blink-soft' : 'bg-[var(--cs-green)]'}`} />
               {charging ? 'Charging and emptying' : 'Ready to roll'}
             </div>
-            <button onClick={onShop} className="pointer-events-auto cs-btn cs-btn-primary">
+            <button onClick={onShop} className="pointer-events-auto cs-btn cs-btn-primary whitespace-nowrap max-sm:!px-5 max-sm:!tracking-[0.12em]">
               <span className="relative flex items-center gap-2.5">{!isTouch && <KeyCap>E</KeyCap>}Upgrade dock</span>
             </button>
           </div>

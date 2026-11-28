@@ -775,6 +775,80 @@ select option { background: #16121a; color: #f3ead8; }
   background: linear-gradient(90deg, transparent, rgba(8, 6, 10, 0.75) 15%, rgba(8, 6, 10, 0.75) 85%, transparent);
   border-top: 1px solid var(--cs-line-soft); border-bottom: 1px solid var(--cs-line-soft);
 }
-.hud-center { background: radial-gradient(50% 60% at 50% 45%, rgba(8, 6, 10, 0.72), rgba(8, 6, 10, 0.35) 65%, transparent 100%); }
+.hud-center { background: radial-gradient(closest-side, rgba(8, 6, 10, 0.72), rgba(8, 6, 10, 0.4) 60%, transparent 100%); }
 .hud-center .cs-title { filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.9)); }
 @media (max-height: 520px) { .hud-map canvas { width: 118px !important; } }
+
+/* ==================================================================== notifications
+ * Regular: a thin dark strip, faded at both ends, with an accent diamond per kind.
+ * Big (room spotless, ghost caught…): a gold banner with a title and a detail line.
+ */
+.cs-toast {
+  --accent: var(--cs-gold);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 7px 34px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  text-align: center;
+  color: var(--cs-ink-hi);
+  background: linear-gradient(90deg, transparent, rgba(8, 6, 10, 0.82) 14%, rgba(8, 6, 10, 0.82) 86%, transparent);
+  border-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 55%, transparent), transparent) 1;
+  border-width: 1px 0;
+  border-style: solid;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  animation: csToastIn 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@media (min-width: 640px) { .cs-toast { font-size: 13px; } }
+.cs-toast-mark {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  transform: rotate(45deg);
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+.cs-banner {
+  --accent: var(--cs-gold);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(560px, 94vw);
+  text-align: center;
+  background: radial-gradient(closest-side, rgba(8, 6, 10, 0.85), rgba(8, 6, 10, 0.6) 55%, transparent 100%);
+  padding: 14px 40px;
+  animation: csBannerIn 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.cs-banner-rule {
+  width: 100%;
+  height: 1px;
+  margin: 10px 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  box-shadow: 0 0 12px var(--accent);
+  transform-origin: center;
+  animation: csRuleIn 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) 0.1s both;
+}
+.cs-toast-out { animation: csToastOut 0.35s ease-in both !important; }
+
+@keyframes csToastIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes csToastOut {
+  to { opacity: 0; transform: translateY(-6px); }
+}
+@keyframes csBannerIn {
+  0% { opacity: 0; transform: scale(1.12); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes csRuleIn {
+  from { transform: scaleX(0); opacity: 0; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cs-toast, .cs-banner, .cs-banner-rule { animation-duration: 0.01s !important; }
+}
